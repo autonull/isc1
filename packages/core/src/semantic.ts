@@ -18,6 +18,7 @@ export interface Distribution {
   type: 'root' | 'fused';
   tag?: string;
   object?: string;
+  weight?: number;
 }
 
 /**
