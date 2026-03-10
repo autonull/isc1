@@ -1,0 +1,18 @@
+{
+  "name": "@isc/node",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node ./dist/index.js"
+  },
+  "dependencies": {
+    "@isc/core": "^0.1.0",
+    "@isc/adapters": "^0.1.0",
+    "@isc/protocol": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
