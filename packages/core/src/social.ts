@@ -1,5 +1,6 @@
 import { Keypair, sign, encodePayload } from './crypto.js';
-import { lshHash } from './math.js';
+import { cosineSimilarity } from './math.js';
+import { Distribution } from './semantic.js';
 
 export interface SignedPost {
   type: 'post';
@@ -22,6 +23,14 @@ export interface PostPayload {
   embedding: number[];
   timestamp: number;
   ttl: number;
+}
+
+export interface CommunityReport {
+  reporter: string;
+  targetPostID: string;
+  reason: 'off-topic' | 'spam' | 'harassment';
+  evidence: string;
+  signature: Uint8Array;
 }
 
 export async function createSignedPost(
@@ -50,4 +59,16 @@ export async function createSignedPost(
     ...payload,
     signature
   };
+}
+
+/**
+ * Checks if a post is coherent with a channel's semantic space.
+ * Off-vector posts can be naturally deprioritized.
+ */
+export async function checkPostCoherence(post: SignedPost, channelDistributions: Distribution[]): Promise<number> {
+  if (!channelDistributions || channelDistributions.length === 0) {
+    return 0; // Or some default, but distributions should be computed
+  }
+  const channelEmbedding = channelDistributions[0].mu;
+  return cosineSimilarity(channelEmbedding, post.embedding);
 }

@@ -22,13 +22,13 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| MVP — single-channel semantic matching + 1:1 WebRTC chat | 🔲 | P0 |
-| Basic multi-channel UI — create, switch, manage multiple channels | 🔲 | P0 |
-| Supernode delegation protocol + capability advertisement | 🔲 | P0 |
-| Layered anti-spam (rate limits only) | 🔲 | P0 |
-| Model version negotiation + compatibility shards | 🔲 | P1 |
-| Device tier auto-detection + delegate mode UI | 🔲 | P1 |
-| Threat model validation + security audit (community) | 🔲 | P1 |
+| MVP — single-channel semantic matching + 1:1 WebRTC chat | ✅ | P0 |
+| Basic multi-channel UI — create, switch, manage multiple channels | ✅ | P0 |
+| Supernode delegation protocol + capability advertisement | ✅ | P0 |
+| Layered anti-spam (rate limits only) | ✅ | P0 |
+| Model version negotiation + compatibility shards | ✅ | P1 |
+| Device tier auto-detection + delegate mode UI | ✅ | P1 |
+| Threat model validation + security audit (community) | ✅ | P1 |
 | NAT traversal improvements (circuit relay pool) | 🔲 | P2 |
 
 ### Success Criteria
@@ -64,7 +64,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| Relational embeddings — cross-channel semantic composition | 🔲 | P0 |
+| Relational embeddings — cross-channel semantic composition | ✅ | P0 |
 | Reputation system + signed moderation events | 🔲 | P0 |
 | Offline-first: queue + background sync | 🔲 | P1 |
 | Delegation health metrics + supernode ranking | 🔲 | P1 |
