@@ -26,7 +26,19 @@
           <header class="channel-header" id="now-channel-header">
             <p>Select or create a channel to start matching.</p>
           </header>
-          <div class="match-list" id="now-match-list">
+          <div class="match-list-sections" id="now-match-list">
+            <div id="matches-very-close">
+              <h3 class="section-title">VERY CLOSE (0.85+)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-nearby">
+              <h3 class="section-title">NEARBY (0.70 - 0.85)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-orbiting">
+              <h3 class="section-title">ORBITING (0.55 - 0.70)</h3>
+              <div class="matches-container"></div>
+            </div>
           </div>
         </section>
 
@@ -55,6 +67,17 @@
             <textarea id="compose-description" rows="4" placeholder="Describe your thought..."></textarea>
 
             <button class="btn-add-context" id="btn-add-context">+ Add context (optional)</button>
+            <div class="context-picker" id="context-picker" style="display: none;">
+              <select id="context-tag-select">
+                <option value="in_location">📍 Place (Where are you thinking this?)</option>
+                <option value="during_time">🕓 Time (When is this relevant?)</option>
+                <option value="with_mood">🎭 Mood (What's the emotional context?)</option>
+                <option value="under_domain">🏷 Domain (What field or discipline?)</option>
+                <option value="causes_effect">⚡ Causes (What causes what?)</option>
+              </select>
+              <input type="text" id="context-object-input" placeholder="e.g. lat:35.68, long:139.69, radius:50km" />
+              <button class="btn-secondary" id="btn-confirm-context">Add</button>
+            </div>
             <div class="context-list" id="compose-context-list">
             </div>
 
@@ -79,6 +102,22 @@
           </header>
           <div class="chat-list" id="chat-list">
             <p>No active chats.</p>
+          </div>
+
+          <!-- Slide-Up Chat Panel -->
+          <div id="chat-panel" class="chat-panel">
+            <div class="chat-panel-header">
+              <button id="btn-close-chat" class="btn-icon">✖</button>
+              <div class="chat-panel-title">
+                <h3 id="chat-peer-id">Peer</h3>
+                <span class="chat-similarity">0.0 similarity</span>
+              </div>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input-area">
+              <input type="text" id="chat-input" placeholder="Type message..." />
+              <button id="btn-send-chat" class="btn-primary" style="margin-top: 0; width: auto; margin-left: 0.5rem;">Send</button>
+            </div>
           </div>
         </section>
 

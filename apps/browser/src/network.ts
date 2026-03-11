@@ -1,6 +1,7 @@
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
 import { webRTC } from '@libp2p/webrtc';
+import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { noise } from '@libp2p/noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { mplex } from '@libp2p/mplex';
@@ -24,7 +25,8 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
     },
     transports: [
       webSockets(), // Needed to connect to bootstrap relays
-      webRTC()      // Needed for direct browser-to-browser chat
+      webRTC(),      // Needed for direct browser-to-browser chat
+      circuitRelayTransport({})
     ],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux(), mplex()],
