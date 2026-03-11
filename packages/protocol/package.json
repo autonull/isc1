@@ -5,12 +5,17 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@isc/core": "^0.1.0"
+    "@isc/adapters": "^0.1.0",
+    "@isc/core": "^0.1.0",
+    "it-pipe": "^3.0.1",
+    "uint8arrays": "^5.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^0.34.0"
   }
 }
