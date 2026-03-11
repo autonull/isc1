@@ -1,0 +1,10 @@
+ISC Node Supernode Starting...
+Initializing core protocols...
+Loading embedding model (Xenova/all-MiniLM-L6-v2)...
+dtype not specified for "model". Using the default dtype (fp32) for this device (cpu).
+Model loaded successfully.
+libp2p Supernode started!
+Listening on:
+/ip4/127.0.0.1/tcp/9090/ws/p2p/12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk
+/ip4/192.168.0.2/tcp/9090/ws/p2p/12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk
+Setup complete. Ready to route traffic and serve DHT.
