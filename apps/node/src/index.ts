@@ -13,11 +13,12 @@ import { identify } from '@libp2p/identify';
 import { handleIncomingChat, handleIncomingAnnounce, handleDelegateRequest, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_DELEGATE } from '@isc/protocol';
 import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 
+const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+
 async function main() {
   console.log('ISC Node Supernode Starting...');
   console.log('Initializing core protocols...');
 
-  const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
   console.log(`Loading embedding model (${MODEL_ID})...`);
 
   try {
@@ -66,6 +67,10 @@ async function main() {
     node.handle(PROTOCOL_ANNOUNCE, (data: any) => {
       console.log('Received PROTOCOL_ANNOUNCE stream');
       handleIncomingAnnounce(data.stream, (msg) => {
+        if (msg.model && msg.model !== MODEL_ID) {
+          console.warn(`Dropped announcement due to model mismatch. Expected ${MODEL_ID}, got ${msg.model}`);
+          return;
+        }
         console.log('Supernode observed announce msg:', msg);
       });
     });

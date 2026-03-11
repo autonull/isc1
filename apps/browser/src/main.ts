@@ -1,5 +1,5 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, SignedPost, Interaction, calculateReputation } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, SignedPost, Interaction, calculateReputation, RateLimiter } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -31,6 +31,7 @@ export const appState: {
   allowDelegation: boolean;
   reputation: { [peerId: string]: Interaction[] };
   offlineQueue: any[];
+  rateLimiter: RateLimiter;
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -45,6 +46,7 @@ export const appState: {
   receivedPosts: [],
   reputation: {},
   offlineQueue: [],
+  rateLimiter: new RateLimiter()
 };
 
 async function loadSavedData() {
@@ -103,8 +105,30 @@ export async function flushOfflineQueue() {
       if (channel) {
         await announceAndDiscover(channel);
       }
+    } else if (action.type === 'post') {
+      if (appState.p2pNode) {
+        const connections = appState.p2pNode.getConnections();
+        for (const conn of connections) {
+          try {
+            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_POST);
+            await sendPostMessage(stream, action.post);
+          } catch (e) {
+            console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+          }
+        }
+      }
+    } else if (action.type === 'chat') {
+      if (appState.p2pNode && action.peerId) {
+        try {
+          const { peerIdFromString } = await import('@libp2p/peer-id');
+          const peerIdObj = peerIdFromString(action.peerId);
+          const stream = await appState.p2pNode.dialProtocol(peerIdObj, PROTOCOL_CHAT);
+          await sendChatMessage(stream, action.msg);
+        } catch (e) {
+          console.warn(`Failed to send queued chat to ${action.peerId}`, e);
+        }
+      }
     }
-    // Add other action types (e.g. post, chat) here as network layer matures
   }
 }
 
@@ -189,7 +213,22 @@ async function initISC() {
         });
       },
       (announcement) => {
-        console.log('Received announcement:', announcement);
+        const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+        if (announcement.model && announcement.model !== MODEL_ID) {
+          console.warn(`Dropped announcement due to model mismatch. Expected ${MODEL_ID}, got ${announcement.model}`);
+          return;
+        }
+        console.log('Received valid announcement:', announcement);
+
+        const peerID = announcement.peerID;
+        if (!appState.discoveredPeers[peerID]) {
+          appState.discoveredPeers[peerID] = [];
+        }
+        // Basic storing logic for discovered hashes if we wanted to extract from the announcement
+        // For Phase 1 we rely on DHT findProviders for direct hashes,
+        // but this stream handles explicit announcements.
+        renderChannels();
+        renderDiscoverTab();
       }
     );
 
@@ -387,6 +426,18 @@ async function sendActiveChatMessage() {
   renderChatList();
 
   // Send via network
+  const msgPayload = {
+    channelID: appState.activeChannelId || 'unknown',
+    msg: text,
+    timestamp: Date.now()
+  };
+
+  if (!navigator.onLine) {
+    await enqueueOfflineAction({ type: 'chat', peerId, msg: msgPayload });
+    console.log(`Queued chat message for ${peerId} (offline)`);
+    return;
+  }
+
   try {
     if (appState.p2pNode) {
       console.log(`Sending message to ${peerId}: ${text}`);
@@ -432,8 +483,8 @@ async function computeTestMatch() {
     };
 
     // Use our actual WASM-based Xenova model to embed the texts
-    const distA = await computeRelationalDistributions(channelA, embedFn);
-    const distB = await computeRelationalDistributions(channelB, embedFn);
+    const distA = await computeRelationalDistributions(channelA, embedFn, appState.tier);
+    const distB = await computeRelationalDistributions(channelB, embedFn, appState.tier);
 
     const score = relationalMatch(distA, distB, appState.tier as any, 'monte_carlo');
     resultSpan.textContent = score.toFixed(4);
@@ -736,6 +787,12 @@ export function renderChannels() {
             btn.className = 'btn-chat';
             btn.textContent = 'Tap to chat';
             btn.addEventListener('click', () => {
+              const myPeerId = appState.p2pNode?.peerId.toString();
+              if (myPeerId && !appState.rateLimiter.attempt(myPeerId, 'chatDial', { maxRequests: 20, windowMs: 3600000 })) {
+                alert('Rate limit exceeded for Chat Dial (20/hr). Please try again later.');
+                return;
+              }
+
               appState.currentChatPeerId = peerId;
               if (!appState.activeChats[peerId]) {
                 appState.activeChats[peerId] = [];
@@ -862,7 +919,7 @@ export async function createChannel(name: string, description: string, spread: n
     }
   };
 
-  channel.distributions = await computeRelationalDistributions(channel, embedFn);
+  channel.distributions = await computeRelationalDistributions(channel, embedFn, appState.tier);
 
   appState.channels.push(channel);
   appState.activeChannelId = channel.id;
@@ -885,17 +942,27 @@ export async function announceAndDiscover(channel: SavedChannel) {
 
   if (!appState.p2pNode || !channel.distributions || channel.distributions.length === 0) return;
 
+  const peerIdStr = appState.p2pNode.peerId.toString();
+  if (!appState.rateLimiter.attempt(peerIdStr, 'announce', { maxRequests: 5, windowMs: 60000 })) {
+    console.warn('Rate limit exceeded for DHT Announce (5/min).');
+    return;
+  }
+
   const rootDist = channel.distributions.find((d: any) => d.type === 'root');
   if (!rootDist) return;
 
   // 1. Generate LSH hashes for the root distribution
   const seed = 'isc_global_seed_v1';
   const hashes = lshHash(rootDist.mu, seed, 5); // 5 hashes for robustness
+  const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
   // 2. Announce our presence for each hash
   for (const hash of hashes) {
     try {
-      const keyStr = `/isc/match/${hash}`;
+      // Model Version Negotiation (Phase 1)
+      // We prepend the model hash/id to ensure we only discover peers using the same model
+      const modelPrefix = MODEL_ID.replace(/\//g, '_');
+      const keyStr = `/isc/match/${modelPrefix}/${hash}`;
       const encoder = new TextEncoder();
       const keyBytes = encoder.encode(keyStr);
 
@@ -1055,20 +1122,24 @@ function setupCompose() {
         appState.receivedPosts.unshift(post);
         renderRecentPosts();
 
-        // Broadcast to all connected peers
-        const connections = appState.p2pNode.getConnections();
-        let sentCount = 0;
-        for (const conn of connections) {
-          try {
-            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_POST);
-            await sendPostMessage(stream, post);
-            sentCount++;
-          } catch (e) {
-            console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+        if (!navigator.onLine) {
+          await enqueueOfflineAction({ type: 'post', post });
+          statusEl.textContent = 'Post queued for offline sync.';
+        } else {
+          // Broadcast to all connected peers
+          const connections = appState.p2pNode.getConnections();
+          let sentCount = 0;
+          for (const conn of connections) {
+            try {
+              const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_POST);
+              await sendPostMessage(stream, post);
+              sentCount++;
+            } catch (e) {
+              console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+            }
           }
+          statusEl.textContent = `Post published to ${sentCount} peer(s)!`;
         }
-
-        statusEl.textContent = `Post published to ${sentCount} peer(s)!`;
 
         // Reset form
         inputName.value = '';
