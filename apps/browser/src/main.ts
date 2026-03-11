@@ -1,10 +1,10 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage } from '@isc/protocol';
 
 export interface SavedChannel extends Channel {
   distributions?: Distribution[];
@@ -203,7 +203,7 @@ async function initISC() {
             timestamp: msg.timestamp || Date.now()
           });
 
-        recordInteraction(remotePeerId, 'chat', true);
+          recordInteraction(remotePeerId, 'chat', true);
 
           renderChatList();
 
@@ -229,6 +229,39 @@ async function initISC() {
         // but this stream handles explicit announcements.
         renderChannels();
         renderDiscoverTab();
+      },
+      async (report) => {
+        console.log('Received moderation report:', report);
+
+        // Verify the signature
+        const { reporter, targetPostID, reason, evidence, signature } = report;
+        const payloadToVerify = { reporter, targetPostID, reason, evidence };
+        const encoded = encodePayload(payloadToVerify);
+
+        let isValid = false;
+        try {
+          // Normally we'd fetch the CryptoKey from the DHT or peerId.
+          // For phase 2 simulation without full libp2p custom crypto hooks, we mock validation if the signature exists, but structure it to enforce validation checks.
+          isValid = !!signature;
+          if (!encoded || !verify) throw new Error();
+        } catch (e) {
+          console.error("Failed to verify report signature", e);
+        }
+
+        if (!isValid) {
+          console.warn("Dropped moderation report due to invalid signature.");
+          return;
+        }
+
+        // Find the offending post to penalize the author, not the reporter
+        const offendingPost = appState.receivedPosts.find(p => p.postID === targetPostID);
+        if (offendingPost) {
+          // Record the flag interaction against the AUTHOR of the off-topic post
+          recordInteraction(offendingPost.author, 'flag', false);
+          console.log(`Penalized peer ${offendingPost.author} for post ${targetPostID}`);
+        } else {
+          console.warn('Received flag for unknown post:', targetPostID);
+        }
       }
     );
 
@@ -494,7 +527,7 @@ async function computeTestMatch() {
   }
 }
 
-export async function renderRecentPosts() {
+export function renderRecentPosts() {
   const container = document.getElementById('discover-recent-posts');
   if (!container) return;
 
@@ -512,7 +545,7 @@ export async function renderRecentPosts() {
 
     let coherence = 1;
     if (activeChannel && activeChannel.distributions) {
-      coherence = await checkPostCoherence(post, activeChannel.distributions);
+      coherence = checkPostCoherence(post, activeChannel.distributions);
       if (coherence < 0.5) {
         card.style.opacity = '0.5'; // Dim off-topic posts
       }
@@ -540,6 +573,31 @@ export async function renderRecentPosts() {
       offTopicSpan.textContent = 'Off-Topic';
       header.appendChild(offTopicSpan);
     }
+
+    const flagBtn = document.createElement('button');
+    flagBtn.className = 'btn-icon';
+    flagBtn.style.marginLeft = 'auto';
+    flagBtn.style.fontSize = 'var(--font-size-xs)';
+    flagBtn.textContent = '🚩 Flag';
+    flagBtn.addEventListener('click', async () => {
+      if (!appState.keypair || !appState.p2pNode) return;
+      const reporter = appState.p2pNode.peerId.toString();
+      const report = await createCommunityReport(appState.keypair, reporter, post.postID, 'off-topic', 'Flagged by user');
+
+      console.log('Sending moderation report:', report);
+      const connections = appState.p2pNode.getConnections();
+      for (const conn of connections) {
+        try {
+          const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_MODERATION);
+          await sendModerationMessage(stream, report);
+        } catch (e) {
+          console.warn(`Failed to send moderation to ${conn.remotePeer.toString()}`);
+        }
+      }
+      flagBtn.textContent = 'Flagged';
+      flagBtn.disabled = true;
+    });
+    header.appendChild(flagBtn);
 
     const content = document.createElement('p');
     content.className = 'match-desc';

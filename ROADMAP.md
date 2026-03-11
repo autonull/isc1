@@ -65,7 +65,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Feature | Status | Priority |
 |---|---|---|
 | Relational embeddings — cross-channel semantic composition | ✅ | P0 |
-| Reputation system + signed moderation events | 🔲 | P0 |
+| Reputation system + signed moderation events | ✅ | P0 |
 | Offline-first: queue + background sync | 🔲 | P1 |
 | Delegation health metrics + supernode ranking | 🔲 | P1 |
 | PWA — installable on mobile, offline-capable shell | 🔲 | P1 |

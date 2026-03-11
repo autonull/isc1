@@ -10,9 +10,9 @@ import { ping } from '@libp2p/ping';
 import { identify } from '@libp2p/identify';
 import { bootstrap } from '@libp2p/bootstrap';
 import { Keypair } from '@isc/core';
-import { handleIncomingAnnounce, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE } from '@isc/protocol';
+import { handleIncomingAnnounce, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_MODERATION, handleIncomingModeration } from '@isc/protocol';
 
-export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, onAnnounce?: (msg: any) => void) {
+export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, onAnnounce?: (msg: any) => void, onModeration?: (msg: any) => void) {
   // We need to convert the subtle CryptoKey into a libp2p expected format
   // For Phase 1, we will just let libp2p generate its own peerId for now
   // until we wire up the custom ed25519 Web Crypto API keys properly to libp2p.
@@ -64,6 +64,12 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
   node.handle(PROTOCOL_ANNOUNCE, (data: any) => {
     if (onAnnounce) {
       handleIncomingAnnounce(data.stream, onAnnounce);
+    }
+  });
+
+  node.handle(PROTOCOL_MODERATION, (data: any) => {
+    if (onModeration) {
+      handleIncomingModeration(data.stream, onModeration);
     }
   });
 

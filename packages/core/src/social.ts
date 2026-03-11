@@ -33,6 +33,19 @@ export interface CommunityReport {
   signature: Uint8Array;
 }
 
+export async function createCommunityReport(
+  keypair: Keypair,
+  reporter: string,
+  targetPostID: string,
+  reason: 'off-topic' | 'spam' | 'harassment',
+  evidence: string
+): Promise<CommunityReport> {
+  const payload = { reporter, targetPostID, reason, evidence };
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+  return { ...payload, signature };
+}
+
 export async function createSignedPost(
   keypair: Keypair,
   peerID: string,
@@ -65,7 +78,7 @@ export async function createSignedPost(
  * Checks if a post is coherent with a channel's semantic space.
  * Off-vector posts can be naturally deprioritized.
  */
-export async function checkPostCoherence(post: SignedPost, channelDistributions: Distribution[]): Promise<number> {
+export function checkPostCoherence(post: SignedPost, channelDistributions: Distribution[]): number {
   if (!channelDistributions || channelDistributions.length === 0) {
     return 0; // Or some default, but distributions should be computed
   }
