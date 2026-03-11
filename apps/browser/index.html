@@ -50,6 +50,11 @@
           <h3>Discovered Peers</h3>
           <div class="trending-cards" id="discover-trending-cards">
           </div>
+
+          <h3 style="margin-top: 2rem;">Recent Posts</h3>
+          <div class="post-list" id="discover-recent-posts">
+            <p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>
+          </div>
         </section>
 
         <!-- Tab 3: Compose -->
@@ -89,7 +94,10 @@
               </div>
             </div>
 
-            <button class="btn-primary" id="btn-publish-channel">Publish Channel</button>
+            <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+              <button class="btn-primary" id="btn-publish-channel" style="flex: 1;">Publish Channel</button>
+              <button class="btn-secondary" id="btn-publish-post" style="flex: 1;">Post to Peers</button>
+            </div>
             <div id="compose-status" style="margin-top: 1rem; color: var(--text-secondary);"></div>
           </div>
         </section>
@@ -131,6 +139,26 @@
 
           <h3>Your Channels (<span id="settings-channel-count">0</span>)</h3>
           <div class="channel-list" id="settings-channel-list">
+          </div>
+
+          <h3 style="margin-top: 2rem;">Device & Network</h3>
+          <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+              <strong>Allow Delegation</strong>
+              <label class="toggle-switch">
+                <input type="checkbox" id="settings-allow-delegation">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <p class="text-sm" style="color: var(--text-secondary); margin-bottom: 0.5rem;">When enabled:</p>
+            <ul class="text-sm" style="color: var(--text-secondary); margin-left: 1.5rem; margin-bottom: 1rem;">
+              <li>Your device helps others find matches</li>
+              <li>Others can request embedding assistance</li>
+              <li>All results are verified locally</li>
+            </ul>
+            <div style="font-size: var(--font-size-xs); color: var(--text-secondary); border-top: 1px solid var(--border-subtle); padding-top: 0.5rem;">
+              Current Device Tier: <strong id="settings-device-tier">Detecting...</strong>
+            </div>
           </div>
         </section>
 

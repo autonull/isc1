@@ -2,6 +2,8 @@
 import { Command } from 'commander';
 import { cosineSimilarity, lshHash, Channel, computeRelationalDistributions, Distribution } from '@isc/core';
 import { nodeModel, nodeStorage } from '@isc/adapters';
+import { createSignedPost, generateKeypair } from '@isc/core';
+import { sendPostMessage, PROTOCOL_POST } from '@isc/protocol';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
 import { noise } from '@libp2p/noise';
@@ -265,6 +267,51 @@ channelCmd
 
     await nodeStorage.set('isc:channels', channels);
     console.log(`Channel with ID "${id}" deleted successfully.`);
+  });
+
+const postCmd = program.command('post').description('Post operations');
+
+postCmd
+  .command('announce')
+  .description('Embed and broadcast a post to connected peers')
+  .argument('<content>', 'Post content')
+  .argument('<channelID>', 'Associated channel ID')
+  .action(async (content: string, channelID: string) => {
+    console.log(`Loading model ${MODEL_ID}...`);
+    await nodeModel.load(MODEL_ID);
+
+    console.log(`Computing embeddings for post...`);
+    const embedding = await nodeModel.embed(content);
+
+    // In a real CLI app, we would load the saved keypair
+    const keypair = await generateKeypair();
+
+    const node = await initCliNode();
+    const peerId = node.peerId.toString();
+
+    const post = await createSignedPost(keypair, peerId, content, channelID, embedding);
+
+    const connections = node.getConnections();
+    if (connections.length === 0) {
+      console.log('No peers connected. Cannot broadcast post.');
+      await node.stop();
+      return;
+    }
+
+    console.log(`Broadcasting post to ${connections.length} peers...`);
+    let sentCount = 0;
+    for (const conn of connections) {
+      try {
+        const stream = await node.dialProtocol(conn.remotePeer, PROTOCOL_POST);
+        await sendPostMessage(stream, post);
+        sentCount++;
+      } catch (e) {
+        console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+      }
+    }
+
+    console.log(`Post broadcasted successfully to ${sentCount} peers!`);
+    await node.stop();
   });
 
 program.parse();
