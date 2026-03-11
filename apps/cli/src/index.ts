@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { cosineSimilarity, lshHash } from '@isc/core';
+import { nodeModel } from '@isc/adapters';
 
 const program = new Command();
+
+const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
 program
   .name('isc')
@@ -11,33 +14,31 @@ program
 
 program
   .command('embed')
-  .description('Embed text into a vector space (mock)')
+  .description('Embed text into a vector space')
   .argument('<text>', 'Text to embed')
   .action(async (text: string) => {
+    console.log(`Loading model ${MODEL_ID}...`);
+    await nodeModel.load(MODEL_ID);
     console.log(`Embedding: "${text}"`);
-    // Mock embedding for now since we haven't implemented the real transformers.js adapter
-    const vec = new Array(384).fill(0).map((_, i) => Math.sin(text.length * i));
-    const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-    const normalized = vec.map(v => v / (norm || 1));
-    console.log(`Vector length: ${normalized.length}, Norm: 1.0`);
+
+    const normalized = await nodeModel.embed(text);
+    const norm = Math.sqrt(normalized.reduce((sum, v) => sum + v * v, 0));
+
+    console.log(`Vector length: ${normalized.length}, Norm: ${norm.toFixed(4)}`);
     console.log(`[${normalized.slice(0, 5).map(n => n.toFixed(4)).join(', ')} ... ]`);
   });
 
 program
   .command('match')
-  .description('Compute cosine similarity between two texts (mock embedding)')
+  .description('Compute cosine similarity between two texts')
   .argument('<text1>', 'First text')
   .argument('<text2>', 'Second text')
   .action(async (text1: string, text2: string) => {
-    // Mock embedding logic inline for CLI testing
-    const embed = (text: string) => {
-      const vec = new Array(384).fill(0).map((_, i) => Math.sin(text.length * i));
-      const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-      return vec.map(v => v / (norm || 1));
-    };
+    console.log(`Loading model ${MODEL_ID}...`);
+    await nodeModel.load(MODEL_ID);
 
-    const vec1 = embed(text1);
-    const vec2 = embed(text2);
+    const vec1 = await nodeModel.embed(text1);
+    const vec2 = await nodeModel.embed(text2);
 
     const sim = cosineSimilarity(vec1, vec2);
     console.log(`Text 1: "${text1}"`);
@@ -47,16 +48,13 @@ program
 
 program
   .command('lsh')
-  .description('Generate LSH hashes for text (mock embedding)')
+  .description('Generate LSH hashes for text')
   .argument('<text>', 'Text to hash')
   .action(async (text: string) => {
-    const embed = (text: string) => {
-      const vec = new Array(384).fill(0).map((_, i) => Math.sin(text.length * i));
-      const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-      return vec.map(v => v / (norm || 1));
-    };
+    console.log(`Loading model ${MODEL_ID}...`);
+    await nodeModel.load(MODEL_ID);
 
-    const vec = embed(text);
+    const vec = await nodeModel.embed(text);
     const hashes = lshHash(vec, 'test_seed_123', 5);
     console.log(`Text: "${text}"`);
     console.log('LSH Hashes:', hashes);
