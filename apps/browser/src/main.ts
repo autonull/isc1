@@ -1,5 +1,5 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, SignedPost } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, SignedPost, Interaction, calculateReputation } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -29,6 +29,7 @@ export const appState: {
   currentChatPeerId: string | null;
   receivedPosts: SignedPost[];
   allowDelegation: boolean;
+  reputation: { [peerId: string]: Interaction[] };
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -41,6 +42,7 @@ export const appState: {
   activeChats: {},
   currentChatPeerId: null,
   receivedPosts: [],
+  reputation: {},
 };
 
 async function loadSavedData() {
@@ -56,6 +58,11 @@ async function loadSavedData() {
     } else {
       appState.allowDelegation = true; // Default to true if not set
     }
+
+    const savedReputation = await browserStorage.get<{ [peerId: string]: Interaction[] }>('isc:reputation');
+    if (savedReputation) {
+      appState.reputation = savedReputation;
+    }
   } catch (err) {
     console.error('Failed to load saved data:', err);
   }
@@ -67,6 +74,29 @@ export async function saveChannels() {
   } catch (err) {
     console.error('Failed to save channels:', err);
   }
+}
+
+export async function saveReputation() {
+  try {
+    await browserStorage.set('isc:reputation', appState.reputation);
+  } catch (err) {
+    console.error('Failed to save reputation:', err);
+  }
+}
+
+export async function recordInteraction(peerId: string, type: Interaction['type'], successful: boolean) {
+  if (!appState.reputation[peerId]) {
+    appState.reputation[peerId] = [];
+  }
+
+  appState.reputation[peerId].push({
+    peerID: peerId,
+    type,
+    successful,
+    timestamp: Date.now()
+  });
+
+  await saveReputation();
 }
 
 async function initISC() {
@@ -104,6 +134,8 @@ async function initISC() {
             timestamp: msg.timestamp || Date.now()
           });
 
+        recordInteraction(remotePeerId, 'chat', true);
+
           renderChatList();
 
           if (appState.currentChatPeerId === remotePeerId) {
@@ -120,6 +152,7 @@ async function initISC() {
       handleIncomingPost(data.stream, (post) => {
         console.log('Received post:', post);
         appState.receivedPosts.unshift(post);
+        recordInteraction(post.author, 'post_reaction', true);
         renderRecentPosts();
       });
     });
@@ -433,6 +466,31 @@ export function renderDiscoverTab() {
 
     const h4 = document.createElement('h4');
     h4.textContent = peerId.substring(0, 12) + '...';
+
+    // Calculate and render reputation
+    const repHistory = appState.reputation[peerId] || [];
+    const repScore = calculateReputation(repHistory, Date.now());
+    const repBadge = document.createElement('span');
+    repBadge.style.fontSize = 'var(--font-size-xs)';
+    repBadge.style.padding = '0.2rem 0.4rem';
+    repBadge.style.borderRadius = '4px';
+    repBadge.style.marginLeft = '0.5rem';
+
+    if (repScore >= 0.8) {
+      repBadge.style.backgroundColor = 'var(--accent-success)';
+      repBadge.style.color = 'white';
+      repBadge.textContent = `⭐ ${(repScore * 100).toFixed(0)}% Rep`;
+    } else if (repScore >= 0.4) {
+      repBadge.style.backgroundColor = 'var(--bg-elevated)';
+      repBadge.style.color = 'var(--text-secondary)';
+      repBadge.textContent = `Neutral (${(repScore * 100).toFixed(0)}%)`;
+    } else {
+      repBadge.style.backgroundColor = 'var(--accent-danger)';
+      repBadge.style.color = 'white';
+      repBadge.textContent = `⚠️ Low Rep`;
+    }
+
+    h4.appendChild(repBadge);
     header.appendChild(h4);
 
     const p = document.createElement('p');
