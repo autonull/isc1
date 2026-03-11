@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { cosineSimilarity, lshHash } from '@isc/core';
-import { nodeModel } from '@isc/adapters';
+import { cosineSimilarity, lshHash, Channel, computeRelationalDistributions, Distribution } from '@isc/core';
+import { nodeModel, nodeStorage } from '@isc/adapters';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
 import { noise } from '@libp2p/noise';
@@ -188,12 +188,83 @@ dhtCmd
 
 const channelCmd = program.command('channel').description('Channel operations');
 
+interface SavedChannel extends Channel {
+  distributions?: Distribution[];
+}
+
+channelCmd
+  .command('create')
+  .description('Create a new channel and save it locally')
+  .argument('<name>', 'Channel name')
+  .argument('<description>', 'Channel description')
+  .action(async (name: string, description: string) => {
+    console.log(`Loading model ${MODEL_ID}...`);
+    await nodeModel.load(MODEL_ID);
+
+    const channel: SavedChannel = {
+      id: Math.random().toString(36).substring(2, 10),
+      name,
+      description,
+      spread: 0.3, // default spread
+    };
+
+    console.log(`Computing embeddings for channel "${name}"...`);
+    channel.distributions = await computeRelationalDistributions(channel, (text) => nodeModel.embed(text));
+
+    let channels = await nodeStorage.get<SavedChannel[]>('isc:channels');
+    if (!Array.isArray(channels)) channels = [];
+
+    channels.push(channel);
+    await nodeStorage.set('isc:channels', channels);
+
+    console.log(`Channel "${name}" created and saved successfully (ID: ${channel.id})`);
+  });
+
 channelCmd
   .command('list')
-  .description('List local channels (stub for CLI storage)')
+  .description('List local channels')
   .action(async () => {
-    console.log('Local channels:');
-    console.log('(CLI local storage not fully implemented in Phase 1 stub)');
+    const channels = await nodeStorage.get<SavedChannel[]>('isc:channels');
+    if (!channels || !Array.isArray(channels) || channels.length === 0) {
+      console.log('No local channels found. Use `isc channel create <name> <description>` to create one.');
+      return;
+    }
+
+    console.log(`Found ${channels.length} local channel(s):\n`);
+    channels.forEach((c: SavedChannel, i: number) => {
+      console.log(`[${i + 1}] ID: ${c.id}`);
+      console.log(`    Name: ${c.name}`);
+      console.log(`    Description: ${c.description}`);
+      if (c.distributions && c.distributions.length > 0) {
+        console.log(`    Embeddings computed: Yes (${c.distributions.length} relations)`);
+      } else {
+        console.log(`    Embeddings computed: No`);
+      }
+      console.log('');
+    });
+  });
+
+channelCmd
+  .command('delete')
+  .description('Delete a local channel by ID')
+  .argument('<id>', 'Channel ID')
+  .action(async (id: string) => {
+    let channels = await nodeStorage.get<SavedChannel[]>('isc:channels');
+    if (!channels || !Array.isArray(channels)) {
+      console.log('No local channels found.');
+      return;
+    }
+
+    const initialLength = channels.length;
+    channels = channels.filter(c => c.id !== id);
+
+    if (channels.length === initialLength) {
+      console.log(`Channel with ID "${id}" not found.`);
+      return;
+    }
+
+    await nodeStorage.set('isc:channels', channels);
+    console.log(`Channel with ID "${id}" deleted successfully.`);
   });
 
 program.parse();

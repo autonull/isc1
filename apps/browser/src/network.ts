@@ -10,7 +10,7 @@ import { ping } from '@libp2p/ping';
 import { identify } from '@libp2p/identify';
 import { bootstrap } from '@libp2p/bootstrap';
 import { Keypair } from '@isc/core';
-import { handleIncomingChat, handleIncomingAnnounce, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE } from '@isc/protocol';
+import { handleIncomingAnnounce, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE } from '@isc/protocol';
 
 export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, onAnnounce?: (msg: any) => void) {
   // We need to convert the subtle CryptoKey into a libp2p expected format
@@ -56,7 +56,8 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
   // Register Protocol Handlers
   node.handle(PROTOCOL_CHAT, (data: any) => {
     if (onChat) {
-      handleIncomingChat(data.stream, onChat);
+      // Pass the entire data object so the handler can see connection metadata (e.g., peer ID) and the stream
+      onChat(data);
     }
   });
 

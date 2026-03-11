@@ -4,7 +4,7 @@ import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 
-import { PROTOCOL_DELEGATE, requestDelegation } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat } from '@isc/protocol';
 
 export interface SavedChannel extends Channel {
   distributions?: Distribution[];
@@ -76,30 +76,29 @@ async function initISC() {
     console.log('Starting libp2p node...');
     appState.p2pNode = await initNode(
       appState.keypair,
-      (chatMsg) => {
-        console.log('Received chat:', chatMsg);
+      (data) => {
+        // initNode provides the full 'data' payload for chat if it was dialed
+        // Actually, initNode expects (chatMsg) => void, but wait, let's look at initNode implementation
+        console.log('Incoming chat stream received');
+        const remotePeerId = data.connection?.remotePeer?.toString() || 'UnknownPeer';
 
-        // Find who sent it by looking at connections
-        // In a real implementation we would have peerId from stream metadata
-        // For now, we'll store under a dummy peer or if we can infer it.
-        // As a fallback, use "UnknownPeer".
-        const senderId = chatMsg.channelID || 'UnknownPeer';
+        handleIncomingChat(data.stream, (msg: any) => {
+          if (!appState.activeChats[remotePeerId]) {
+            appState.activeChats[remotePeerId] = [];
+          }
 
-        if (!appState.activeChats[senderId]) {
-          appState.activeChats[senderId] = [];
-        }
+          appState.activeChats[remotePeerId].push({
+            sender: 'peer',
+            text: msg.msg || msg.content,
+            timestamp: msg.timestamp || Date.now()
+          });
 
-        appState.activeChats[senderId].push({
-          sender: 'peer',
-          text: chatMsg.msg,
-          timestamp: Date.now()
+          renderChatList();
+
+          if (appState.currentChatPeerId === remotePeerId) {
+            renderChatPanel();
+          }
         });
-
-        renderChatList();
-
-        if (appState.currentChatPeerId === senderId) {
-          renderChatPanel();
-        }
       },
       (announcement) => {
         console.log('Received announcement:', announcement);
@@ -269,17 +268,18 @@ async function sendActiveChatMessage() {
   renderChatPanel();
   renderChatList();
 
-  // Send via network (in a real app, this stream needs to be dialed or re-used)
+  // Send via network
   try {
     if (appState.p2pNode) {
-      // For now we just log it since full libp2p dialing to browser peers requires
-      // relay resolution which is out of scope for UI simulation unless we have a target
       console.log(`Sending message to ${peerId}: ${text}`);
-
-      /* Real implementation would look like:
-      const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
-      await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text });
-      */
+      try {
+        // Attempt dialing direct multiaddrs or rely on relay
+        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
+        await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
+        console.log('Message sent successfully!');
+      } catch (dialErr) {
+        console.error(`Dialing peer ${peerId} failed, this is expected in browser-only sim without proper STUN/TURN setups:`, dialErr);
+      }
     }
   } catch (err) {
     console.error('Failed to send message:', err);
@@ -323,6 +323,65 @@ async function computeTestMatch() {
     console.error('Match failed', err);
     resultSpan.textContent = 'Error (see console)';
   }
+}
+
+export function renderDiscoverTab() {
+  const container = document.getElementById('discover-trending-cards');
+  const searchInput = document.getElementById('discover-search-input') as HTMLInputElement;
+  if (!container) return;
+
+  const filterText = searchInput?.value.toLowerCase() || '';
+  container.innerHTML = '';
+
+  const peerIds = Object.keys(appState.discoveredPeers);
+  if (peerIds.length === 0) {
+    container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">Looking for peers... (DHT queries may take a few moments)</p>';
+    return;
+  }
+
+  peerIds.forEach(peerId => {
+    // Basic filter by peerId for Phase 1 since we don't fetch full profiles yet
+    if (filterText && !peerId.toLowerCase().includes(filterText)) {
+      return;
+    }
+
+    const hashes = appState.discoveredPeers[peerId];
+
+    const card = document.createElement('div');
+    card.className = 'card match-card';
+
+    const header = document.createElement('div');
+    header.className = 'match-header';
+
+    const h4 = document.createElement('h4');
+    h4.textContent = peerId.substring(0, 12) + '...';
+    header.appendChild(h4);
+
+    const p = document.createElement('p');
+    p.className = 'match-desc';
+    p.textContent = `Discovered via ${hashes.length} shared hash(es)`;
+
+    const btn = document.createElement('button');
+    btn.className = 'btn-secondary btn-sm';
+    btn.textContent = 'Message';
+    btn.addEventListener('click', () => {
+      appState.currentChatPeerId = peerId;
+      if (!appState.activeChats[peerId]) {
+        appState.activeChats[peerId] = [];
+      }
+      openChatPanel();
+
+      // Switch to chats tab
+      const navBtnChats = document.querySelector('.nav-btn[data-tab="chats"]') as HTMLButtonElement;
+      if (navBtnChats) navBtnChats.click();
+    });
+
+    card.appendChild(header);
+    card.appendChild(p);
+    card.appendChild(btn);
+
+    container.appendChild(card);
+  });
 }
 
 export function renderChannels() {
@@ -597,6 +656,7 @@ export async function announceAndDiscover(channel: SavedChannel) {
         }
 
         renderChannels(); // Refresh UI to show newly discovered peer
+        renderDiscoverTab(); // Refresh Discover tab
       }
     } catch (err) {
       console.error(`DHT operation failed for hash ${hash}:`, err);
@@ -702,6 +762,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   setupCompose();
+
+  const searchInput = document.getElementById('discover-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      renderDiscoverTab();
+    });
+  }
 
   // Test match UI logic
   const testBtn = document.getElementById('btn-test-match');
