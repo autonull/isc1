@@ -133,7 +133,7 @@ body {
   margin-top: 1rem;
 }
 
-input[type="text"], textarea {
+input[type="text"], textarea, select {
   width: 100%;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
@@ -141,4 +141,124 @@ input[type="text"], textarea {
   padding: 0.5rem;
   border-radius: 4px;
   margin-bottom: 1rem;
+  box-sizing: border-box;
+}
+
+.section-title {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+}
+
+/* Chat Panel Slide-up */
+.chat-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-primary);
+  border-radius: 16px 16px 0 0;
+  height: 60vh;
+  transform: translateY(100%);
+  transition: transform 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-subtle);
+  box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+}
+
+.chat-panel.open {
+  transform: translateY(0);
+}
+
+.chat-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-panel-title {
+  flex: 1;
+  text-align: center;
+}
+
+.chat-panel-title h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.chat-similarity {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-message {
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 8px;
+  max-width: 80%;
+}
+
+.chat-message.self {
+  background: var(--accent-primary);
+  color: white;
+  align-self: flex-end;
+}
+
+.chat-message.peer {
+  background: var(--bg-elevated);
+  align-self: flex-start;
+}
+
+.chat-input-area {
+  display: flex;
+  padding: 1rem;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
+.chat-input-area input {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.btn-secondary {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.context-picker {
+  background: var(--bg-secondary);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border-subtle);
+}
+
+.match-list-sections > div {
+  margin-bottom: 2rem;
 }
