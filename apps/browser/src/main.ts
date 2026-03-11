@@ -1,5 +1,5 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -540,6 +540,59 @@ async function computeTestMatch() {
   }
 }
 
+export async function fetchForYouFeed() {
+  const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+
+  // Fetch posts from DHT for the active channel
+  if (navigator.onLine && appState.p2pNode && activeChannel && activeChannel.distributions && activeChannel.distributions.length > 0) {
+    const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+    // Query DHT based on the root distribution of the active channel
+    const rootDist = activeChannel.distributions.find((d: any) => d.type === 'root');
+    if (rootDist) {
+      // Find adjacent shards to discover nearby posts
+      const keys = getPostDHTKeys(rootDist.mu, MODEL_ID, 5);
+      for (const keyStr of keys) {
+        try {
+          const keyBytes = new TextEncoder().encode(keyStr);
+
+          if (appState.p2pNode.services && appState.p2pNode.services.dht) {
+            try {
+              // Create an abort signal so we don't hang forever
+              const abortController = new AbortController();
+              setTimeout(() => abortController.abort(), 5000); // 5s timeout per query
+
+              for await (const event of appState.p2pNode.services.dht.get(keyBytes, { signal: abortController.signal })) {
+                if (event.name === 'VALUE' && event.value) {
+                  try {
+                    const postStr = new TextDecoder().decode(event.value);
+                    const post: SignedPost = JSON.parse(postStr);
+                    // Add if we don't already have it
+                    if (!appState.receivedPosts.find(p => p.postID === post.postID)) {
+                      appState.receivedPosts.push(post);
+                    }
+                  } catch (parseErr) {
+                    console.warn('Failed to parse post from DHT', parseErr);
+                  }
+                }
+              }
+            } catch (dhtErr: any) {
+              // Ignore abort or not found errors
+              if (dhtErr.code !== 'ERR_NOT_FOUND' && dhtErr.name !== 'AbortError') {
+                console.warn('DHT get error:', dhtErr);
+              }
+            }
+          }
+        } catch (e) {
+          // General failure
+        }
+      }
+
+      // Update UI after all fetches attempt to complete
+      renderRecentPosts();
+    }
+  }
+}
+
 export function renderRecentPosts() {
   const container = document.getElementById('discover-recent-posts');
   if (!container) return;
@@ -551,8 +604,21 @@ export function renderRecentPosts() {
 
   const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
 
+  // Score and sort posts by similarity to the current channel
+  let postsToRender = [...appState.receivedPosts];
+  if (activeChannel && activeChannel.distributions) {
+    postsToRender.sort((a, b) => {
+      const coherenceA = checkPostCoherence(a, activeChannel.distributions!);
+      const coherenceB = checkPostCoherence(b, activeChannel.distributions!);
+      return coherenceB - coherenceA; // Descending
+    });
+  } else {
+    // If no active channel, just show newest first
+    postsToRender.sort((a, b) => b.timestamp - a.timestamp);
+  }
+
   container.innerHTML = '';
-  for (const post of appState.receivedPosts) {
+  for (const post of postsToRender) {
     const card = document.createElement('div');
     card.className = 'card match-card';
 
@@ -752,6 +818,7 @@ export function renderChannels() {
         div.addEventListener('click', () => {
           appState.activeChannelId = ch.id;
           renderChannels();
+          fetchForYouFeed(); // Fetch when switching channels immediately
           window.switchView('channel');
         });
 
@@ -1256,7 +1323,38 @@ function setupCompose() {
           await enqueueOfflineAction({ type: 'post', post });
           console.log('Post queued for offline sync.');
         } else {
-          // Broadcast to all connected peers
+          // 1. Announce to DHT
+          try {
+            const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+            const keys = getPostDHTKeys(post.embedding, MODEL_ID, 5);
+
+            const postBytes = new TextEncoder().encode(JSON.stringify(post));
+            let announceCount = 0;
+
+            for (const keyStr of keys) {
+              try {
+                const keyBytes = new TextEncoder().encode(keyStr);
+
+                // libp2p kad-dht operates on the .services.dht object for general put/get
+                if (appState.p2pNode.services && appState.p2pNode.services.dht) {
+                  // dht.put returns an AsyncGenerator, so we must iterate it to execute it
+                  for await (const event of appState.p2pNode.services.dht.put(keyBytes, postBytes)) {
+                    // Just draining the generator
+                  }
+                  announceCount++;
+                } else {
+                  console.warn('DHT service not found on node');
+                }
+              } catch (e) {
+                console.warn(`Failed to announce post to DHT for key ${keyStr}`, e);
+              }
+            }
+            console.log(`Announced post to DHT successfully (${announceCount} shards).`);
+          } catch (dhtErr) {
+            console.error('DHT Announcement failed', dhtErr);
+          }
+
+          // 2. Broadcast to all connected peers for immediate propagation
           const connections = appState.p2pNode.getConnections();
           let sentCount = 0;
           for (const conn of connections) {
@@ -1288,6 +1386,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize the ISC core modules
   initISC().then(() => {
     renderChannels();
+
+    // Periodically fetch posts for the active channel's "For You" feed
+    setInterval(() => {
+      if (appState.activeChannelId) {
+        fetchForYouFeed();
+      }
+    }, 10000);
   });
 
   setupCompose();
