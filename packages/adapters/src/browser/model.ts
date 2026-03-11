@@ -1,11 +1,16 @@
 import { EmbeddingModelAdapter } from '../interfaces/index.js';
-import { pipeline } from '@huggingface/transformers';
+import { pipeline, env } from '@huggingface/transformers';
 
 class BrowserModelAdapter implements EmbeddingModelAdapter {
   private _pipeline: any = null;
 
   async load(modelId: string): Promise<void> {
     try {
+      env.allowLocalModels = false;
+      if (env.backends.onnx.wasm) {
+        env.backends.onnx.wasm.numThreads = 1;
+        env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/';
+      }
       this._pipeline = await pipeline('feature-extraction', modelId);
     } catch (e) {
       console.error('Failed to load embedding model', e);
