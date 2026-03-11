@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#6366F1" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>ISC — Meet your thought neighbors</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top Navigation -->
+      <nav id="top-nav">
+        <button class="nav-btn active" data-tab="now">🏠 Now</button>
+        <button class="nav-btn" data-tab="discover">📡 Discover</button>
+        <button class="nav-btn" data-tab="compose">➕ Compose</button>
+        <button class="nav-btn" data-tab="chats">💬 Chats</button>
+        <button class="nav-btn" data-tab="settings">⚙️ Settings</button>
+        <button class="nav-btn" data-tab="test">🧪 Test Match</button>
+      </nav>
+
+      <!-- Main Content Area -->
+      <main id="main-content">
+
+        <!-- Tab 1: Now -->
+        <section id="tab-now" class="tab-content active">
+          <header class="channel-header" id="now-channel-header">
+            <p>Select or create a channel to start matching.</p>
+          </header>
+          <div class="match-list-sections" id="now-match-list">
+            <div id="matches-very-close">
+              <h3 class="section-title">VERY CLOSE (0.85+)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-nearby">
+              <h3 class="section-title">NEARBY (0.70 - 0.85)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-orbiting">
+              <h3 class="section-title">ORBITING (0.55 - 0.70)</h3>
+              <div class="matches-container"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 2: Discover -->
+        <section id="tab-discover" class="tab-content">
+          <div class="search-bar">
+            <input type="text" id="discover-search-input" placeholder="🔍 Search thoughts..." />
+          </div>
+          <h3>Discovered Peers</h3>
+          <div class="trending-cards" id="discover-trending-cards">
+          </div>
+
+          <h3 style="margin-top: 2rem;">Recent Posts</h3>
+          <div class="post-list" id="discover-recent-posts">
+            <p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>
+          </div>
+        </section>
+
+        <!-- Tab 3: Compose -->
+        <section id="tab-compose" class="tab-content">
+          <header class="compose-header">
+            <button class="btn-cancel" id="btn-compose-cancel">← Cancel</button>
+            <h2>New Channel</h2>
+          </header>
+          <div class="compose-body">
+            <label>Channel Name</label>
+            <input type="text" id="compose-name" placeholder="E.g., AI Ethics" />
+
+            <label>What are you thinking about?</label>
+            <textarea id="compose-description" rows="4" placeholder="Describe your thought..."></textarea>
+
+            <button class="btn-add-context" id="btn-add-context">+ Add context (optional)</button>
+            <div class="context-picker" id="context-picker" style="display: none;">
+              <select id="context-tag-select">
+                <option value="in_location">📍 Place (Where are you thinking this?)</option>
+                <option value="during_time">🕓 Time (When is this relevant?)</option>
+                <option value="with_mood">🎭 Mood (What's the emotional context?)</option>
+                <option value="under_domain">🏷 Domain (What field or discipline?)</option>
+                <option value="causes_effect">⚡ Causes (What causes what?)</option>
+              </select>
+              <input type="text" id="context-object-input" placeholder="e.g. lat:35.68, long:139.69, radius:50km" />
+              <button class="btn-secondary" id="btn-confirm-context">Add</button>
+            </div>
+            <div class="context-list" id="compose-context-list">
+            </div>
+
+            <div class="spread-control">
+              <label>How specific are you being?</label>
+              <div class="slider-wrapper">
+                <span>Precise</span>
+                <input type="range" id="compose-spread" min="1" max="100" value="30" />
+                <span>Exploratory</span>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+              <button class="btn-primary" id="btn-publish-channel" style="flex: 1;">Publish Channel</button>
+              <button class="btn-secondary" id="btn-publish-post" style="flex: 1;">Post to Peers</button>
+            </div>
+            <div id="compose-status" style="margin-top: 1rem; color: var(--text-secondary);"></div>
+          </div>
+        </section>
+
+        <!-- Tab 4: Chats -->
+        <section id="tab-chats" class="tab-content">
+          <header class="chats-header">
+            <h2>Chats</h2>
+          </header>
+          <div class="chat-list" id="chat-list">
+            <p>No active chats.</p>
+          </div>
+
+          <!-- Slide-Up Chat Panel -->
+          <div id="chat-panel" class="chat-panel">
+            <div class="chat-panel-header">
+              <button id="btn-close-chat" class="btn-icon">✖</button>
+              <div class="chat-panel-title">
+                <h3 id="chat-peer-id">Peer</h3>
+                <span class="chat-similarity">0.0 similarity</span>
+              </div>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input-area">
+              <input type="text" id="chat-input" placeholder="Type message..." />
+              <button id="btn-send-chat" class="btn-primary" style="margin-top: 0; width: auto; margin-left: 0.5rem;">Send</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 5: Settings -->
+        <section id="tab-settings" class="tab-content">
+          <h2>Profile</h2>
+          <div class="profile-card">
+            <h3>Your Peer ID</h3>
+            <p id="profile-peer-id">Loading...</p>
+            <p class="bio" id="profile-bio">"No active channels"</p>
+          </div>
+
+          <h3>Your Channels (<span id="settings-channel-count">0</span>)</h3>
+          <div class="channel-list" id="settings-channel-list">
+          </div>
+
+          <h3 style="margin-top: 2rem;">Device & Network</h3>
+          <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+              <strong>Allow Delegation</strong>
+              <label class="toggle-switch">
+                <input type="checkbox" id="settings-allow-delegation">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <p class="text-sm" style="color: var(--text-secondary); margin-bottom: 0.5rem;">When enabled:</p>
+            <ul class="text-sm" style="color: var(--text-secondary); margin-left: 1.5rem; margin-bottom: 1rem;">
+              <li>Your device helps others find matches</li>
+              <li>Others can request embedding assistance</li>
+              <li>All results are verified locally</li>
+            </ul>
+            <div style="font-size: var(--font-size-xs); color: var(--text-secondary); border-top: 1px solid var(--border-subtle); padding-top: 0.5rem;">
+              Current Device Tier: <strong id="settings-device-tier">Detecting...</strong>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 6: Test Match -->
+        <section id="tab-test" class="tab-content">
+          <header class="chats-header">
+            <h2>Semantic Matcher Test</h2>
+          </header>
+          <div class="compose-body">
+            <label>Channel A Description</label>
+            <textarea id="test-input-a" rows="3">Ethical implications of machine learning and autonomy</textarea>
+
+            <label>Channel B Description</label>
+            <textarea id="test-input-b" rows="3">The philosophy of AI art and copyright</textarea>
+
+            <button id="btn-test-match" class="btn-primary" disabled>Compute Match (Wait for model)</button>
+
+            <div style="margin-top: 1rem;">
+              <strong>Similarity Score:</strong> <span id="test-match-result">N/A</span>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then(registration => {
+            console.log('SW registered: ', registration);
+          }).catch(registrationError => {
+            console.log('SW registration failed: ', registrationError);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

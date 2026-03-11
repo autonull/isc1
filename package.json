@@ -1,0 +1,19 @@
+{
+  "name": "isc-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "turbo": "^1.10.12",
+    "typescript": "^5.0.0",
+    "vitest": "^0.34.0"
+  }
+}
