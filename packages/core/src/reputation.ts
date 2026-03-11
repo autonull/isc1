@@ -24,7 +24,7 @@ export interface ReputationScore {
  * - t = time since last activity (days)
  * - interaction_delta = +0.1 for successful interaction, -0.2 for flagged interaction
  */
-export function calculateReputation(interactions: Interaction[], now: number): number {
+export function calculateReputation(interactions: Interaction[], now: number, peerCreatedAt: number): number {
   const lambda = Math.log(2) / 30; // 30-day half-life
   const baseReputation = 0.5;
 
@@ -46,13 +46,23 @@ export function calculateReputation(interactions: Interaction[], now: number): n
     let delta = 0;
     if (interaction.type === 'flag') {
       delta = -0.2;
-    } else {
-      delta = interaction.successful ? 0.1 : 0.0;
+    } else if (interaction.successful) {
+      // Mutual signing requirement simulated by requiring successful interaction
+      delta = 0.1;
     }
 
     reputation += delta * Math.exp(-lambda * ageDays);
   }
 
   // Clamp to [0, 1]
-  return Math.max(0, Math.min(1, reputation));
+  reputation = Math.max(0, Math.min(1, reputation));
+
+  // 7-day bootstrapping for new peers: cap the reputation at the base level
+  // until the peer is older than 7 days
+  const peerAgeDays = (now - peerCreatedAt) / (1000 * 60 * 60 * 24);
+  if (peerAgeDays < 7) {
+     reputation = Math.min(reputation, baseReputation);
+  }
+
+  return reputation;
 }
