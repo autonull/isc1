@@ -2,6 +2,17 @@ export const PROTOCOL_CHAT = '/isc/chat/1.0';
 export const PROTOCOL_DELEGATE = '/isc/delegate/1.0';
 export const PROTOCOL_ANNOUNCE = '/isc/announce/1.0';
 export const PROTOCOL_MODERATION = '/isc/moderation/1.0';
+export const PROTOCOL_DELEGATION_HEALTH = '/isc/delegation_health/1.0';
+
+export interface DelegationHealth {
+  type: 'delegation_health';
+  peerID: string;
+  successRate: number;
+  avgLatencyMs: number;
+  requestsServed24h: number;
+  timestamp: number;
+  signature: string;
+}
 
 export interface ChatMessage {
   channelID: string;

@@ -4,7 +4,7 @@ import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth } from '@isc/protocol';
 
 export interface SavedChannel extends Channel {
   distributions?: Distribution[];
@@ -32,6 +32,7 @@ export const appState: {
   reputation: { [peerId: string]: Interaction[] };
   offlineQueue: any[];
   rateLimiter: RateLimiter;
+  supernodeHealth: { [peerId: string]: any };
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -46,7 +47,8 @@ export const appState: {
   receivedPosts: [],
   reputation: {},
   offlineQueue: [],
-  rateLimiter: new RateLimiter()
+  rateLimiter: new RateLimiter(),
+  supernodeHealth: {}
 };
 
 async function loadSavedData() {
@@ -271,6 +273,17 @@ async function initISC() {
         appState.receivedPosts.unshift(post);
         recordInteraction(post.author, 'post_reaction', true);
         renderRecentPosts();
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_DELEGATION_HEALTH, (data: any) => {
+      handleDelegationHealth(data.stream, (health) => {
+        // Only update if it's newer
+        const existing = appState.supernodeHealth[health.peerID];
+        if (!existing || existing.timestamp < health.timestamp) {
+          appState.supernodeHealth[health.peerID] = health;
+          console.log(`Updated health metrics for supernode ${health.peerID}: ${health.successRate * 100}% success`);
+        }
       });
     });
 
@@ -939,11 +952,33 @@ export async function createChannel(name: string, description: string, spread: n
     } else {
       // Use delegation
       console.log('Delegating embedding request to supernode...');
-      // In a real network we'd lookup a supernode. Here we dial our bootstrap node.
+
+      let targetPeerId = '12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk'; // Default to bootstrap
+      let targetMultiaddr = `/ip4/127.0.0.1/tcp/9090/ws/p2p/${targetPeerId}`;
+
+      // Rank supernodes
+      const healthEntries = Object.values(appState.supernodeHealth);
+      if (healthEntries.length > 0) {
+        // Sort by success rate descending, then latency ascending
+        healthEntries.sort((a, b) => {
+          if (b.successRate !== a.successRate) {
+            return b.successRate - a.successRate;
+          }
+          return a.avgLatencyMs - b.avgLatencyMs;
+        });
+
+        const bestSupernode = healthEntries[0];
+        // Only switch if it's healthy enough
+        if (bestSupernode.successRate > 0.85) {
+          targetPeerId = bestSupernode.peerID;
+          targetMultiaddr = `/p2p/${targetPeerId}`; // Use multiaddr format to dial directly (assuming DHT/relay can route it)
+          console.log(`Selected supernode ${targetPeerId} based on health rank (${bestSupernode.successRate * 100}% success, ${bestSupernode.avgLatencyMs}ms latency)`);
+        }
+      }
+
       try {
-        const bootstrapPeerId = '12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk';
         const stream = await appState.p2pNode.dialProtocol(
-          `/ip4/127.0.0.1/tcp/9090/ws/p2p/${bootstrapPeerId}`,
+          targetMultiaddr,
           PROTOCOL_DELEGATE
         );
 
