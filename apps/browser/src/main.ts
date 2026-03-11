@@ -137,6 +137,12 @@ export async function flushOfflineQueue() {
 window.addEventListener('online', () => {
   console.log('Browser came online. Initiating background sync...');
   flushOfflineQueue();
+  renderChannels();
+});
+
+window.addEventListener('offline', () => {
+  console.log('Browser went offline.');
+  renderChannels();
 });
 
 export async function saveChannels() {
@@ -978,7 +984,19 @@ export function renderChannels() {
         (document.getElementById('matches-nearby') as HTMLElement).style.display = matchesNearby.childElementCount > 0 ? 'block' : 'none';
         (document.getElementById('matches-orbiting') as HTMLElement).style.display = matchesOrbiting.childElementCount > 0 ? 'block' : 'none';
 
-        if (discoveredPeerIds.length === 0) {
+        if (!navigator.onLine) {
+          (document.getElementById('matches-orbiting') as HTMLElement).style.display = 'block';
+          matchesOrbiting.innerHTML = `
+            <style>
+              @keyframes isc-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+              .isc-spinner { border: 3px solid var(--border-subtle, rgba(255,255,255,0.1)); border-top: 3px solid var(--primary, #6366F1); border-radius: 50%; width: 24px; height: 24px; animation: isc-spin 1s linear infinite; margin: 0 auto 10px auto; }
+            </style>
+            <div style="padding: 2rem 1rem; text-align: center; color: var(--text-secondary);">
+              <div class="isc-spinner"></div>
+              <p>Looking for the network…</p>
+            </div>
+          `;
+        } else if (discoveredPeerIds.length === 0) {
           (document.getElementById('matches-orbiting') as HTMLElement).style.display = 'block';
           matchesOrbiting.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">Looking for peers... (DHT queries may take a few moments)</p>';
         }
@@ -1338,7 +1356,7 @@ function setupCompose() {
                 // libp2p kad-dht operates on the .services.dht object for general put/get
                 if (appState.p2pNode.services && appState.p2pNode.services.dht) {
                   // dht.put returns an AsyncGenerator, so we must iterate it to execute it
-                  for await (const event of appState.p2pNode.services.dht.put(keyBytes, postBytes)) {
+                  for await (const _event of appState.p2pNode.services.dht.put(keyBytes, postBytes)) {
                     // Just draining the generator
                   }
                   announceCount++;
