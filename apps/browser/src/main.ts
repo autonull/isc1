@@ -604,9 +604,8 @@ export function renderDiscoverTab() {
       }
       openChatPanel();
 
-      // Switch to chats tab
-      const navBtnChats = document.querySelector('.nav-btn[data-tab="chats"]') as HTMLButtonElement;
-      if (navBtnChats) navBtnChats.click();
+      // Switch to chats view
+      window.switchView('chat');
     });
 
     card.appendChild(header);
@@ -652,29 +651,23 @@ export function renderChannels() {
 
   if (listEl) {
     listEl.innerHTML = '';
-    appState.channels.forEach(ch => {
-      const div = document.createElement('div');
-      div.className = 'channel-item';
+    if (appState.channels.length === 0) {
+      listEl.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary); font-size: 0.8rem;">No active channels</p>';
+    } else {
+      appState.channels.forEach(ch => {
+        const div = document.createElement('div');
+        div.className = `channel-item ${ch.id === appState.activeChannelId ? 'active' : ''}`;
+        div.textContent = `# ${ch.name}`;
 
-      const strong = document.createElement('strong');
-      strong.textContent = `${ch.id === appState.activeChannelId ? '● ' : ''}${ch.name}`;
+        div.addEventListener('click', () => {
+          appState.activeChannelId = ch.id;
+          renderChannels();
+          window.switchView('channel');
+        });
 
-      const span = document.createElement('span');
-      span.textContent = '- nearby';
-
-      const btn = document.createElement('button');
-      btn.dataset.id = ch.id;
-      btn.textContent = 'Select';
-      btn.addEventListener('click', () => {
-        appState.activeChannelId = ch.id;
-        renderChannels();
+        listEl.appendChild(div);
       });
-
-      div.appendChild(strong);
-      div.appendChild(span);
-      div.appendChild(btn);
-      listEl.appendChild(div);
-    });
+    }
   }
 
   // Also start discovery when switching channels if node is ready
@@ -929,8 +922,16 @@ export async function createChannel(name: string, description: string, spread: n
 
   channel.distributions = await computeRelationalDistributions(channel, embedFn, appState.tier);
 
-  appState.channels.push(channel);
-  appState.activeChannelId = channel.id;
+  // If a temporary matching channel was pushed locally, replace it
+  const existingIndex = appState.channels.findIndex(c => c.name === name && c.description === description && !c.distributions);
+  if (existingIndex >= 0) {
+    channel.id = appState.channels[existingIndex].id; // retain the generated ID
+    appState.channels[existingIndex] = channel;
+  } else {
+    appState.channels.push(channel);
+    appState.activeChannelId = channel.id;
+  }
+
   await saveChannels();
 
   if (navigator.onLine) {
@@ -1002,7 +1003,6 @@ export async function announceAndDiscover(channel: SavedChannel) {
         }
 
         renderChannels(); // Refresh UI to show newly discovered peer
-        renderDiscoverTab(); // Refresh Discover tab
       }
     } catch (err) {
       console.error(`DHT operation failed for hash ${hash}:`, err);
@@ -1076,8 +1076,19 @@ function setupCompose() {
       (btnPublish as HTMLButtonElement).disabled = true;
 
       try {
-        await createChannel(name, desc, spread, currentRelations);
-        statusEl.textContent = 'Channel published!';
+        // Run channel creation and discovery asynchronously so UI unblocks immediately
+        createChannel(name, desc, spread, currentRelations).catch(console.error);
+        statusEl.textContent = 'Channel creation started...';
+
+        // Fake immediate local update for responsiveness
+        const newId = Math.random().toString(36).substring(2, 10);
+        appState.channels.push({
+          id: newId,
+          name,
+          description: desc,
+          spread
+        });
+        appState.activeChannelId = newId;
 
         // Reset form
         inputName.value = '';
@@ -1088,9 +1099,8 @@ function setupCompose() {
 
         renderChannels();
 
-        // Switch back to "Now" tab
-        const navBtnNow = document.querySelector('.nav-btn[data-tab="now"]') as HTMLButtonElement;
-        if (navBtnNow) navBtnNow.click();
+        // Switch back to "Channel" view
+        window.switchView('channel');
       } catch (err: any) {
         statusEl.textContent = 'Failed to create channel: ' + err.message;
         console.error(err);
@@ -1101,18 +1111,19 @@ function setupCompose() {
     });
   }
 
-  if (btnPost && inputName && inputDesc && statusEl && appState.keypair && appState.p2pNode) {
-    btnPost.addEventListener('click', async () => {
-      const name = inputName.value.trim();
-      const desc = inputDesc.value.trim();
+  const btnPostInline = document.getElementById('btn-publish-post-inline');
+  const inputPostInline = document.getElementById('compose-post-input') as HTMLInputElement;
 
-      if (!name || !desc) {
-        statusEl.textContent = 'Please provide a name and description for the post.';
+  if (btnPostInline && inputPostInline && appState.keypair && appState.p2pNode) {
+    btnPostInline.addEventListener('click', async () => {
+      const desc = inputPostInline.value.trim();
+
+      if (!desc) {
         return;
       }
 
-      btnPost.textContent = 'Posting...';
-      (btnPost as HTMLButtonElement).disabled = true;
+      btnPostInline.textContent = 'Posting...';
+      (btnPostInline as HTMLButtonElement).disabled = true;
 
       try {
         let embedding: number[] = [];
@@ -1132,7 +1143,7 @@ function setupCompose() {
 
         if (!navigator.onLine) {
           await enqueueOfflineAction({ type: 'post', post });
-          statusEl.textContent = 'Post queued for offline sync.';
+          console.log('Post queued for offline sync.');
         } else {
           // Broadcast to all connected peers
           const connections = appState.p2pNode.getConnections();
@@ -1146,23 +1157,17 @@ function setupCompose() {
               console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
             }
           }
-          statusEl.textContent = `Post published to ${sentCount} peer(s)!`;
+          console.log(`Post published to ${sentCount} peer(s)!`);
         }
 
         // Reset form
-        inputName.value = '';
-        inputDesc.value = '';
-
-        // Switch to "Discover" tab to view it
-        const navBtnDiscover = document.querySelector('.nav-btn[data-tab="discover"]') as HTMLButtonElement;
-        if (navBtnDiscover) navBtnDiscover.click();
+        inputPostInline.value = '';
 
       } catch (err: any) {
-        statusEl.textContent = 'Failed to broadcast post: ' + err.message;
-        console.error(err);
+        console.error('Failed to broadcast post:', err);
       } finally {
-        btnPost.textContent = 'Post to Peers';
-        (btnPost as HTMLButtonElement).disabled = false;
+        btnPostInline.textContent = 'Post';
+        (btnPostInline as HTMLButtonElement).disabled = false;
       }
     });
   }
@@ -1203,21 +1208,25 @@ document.addEventListener('DOMContentLoaded', () => {
     testBtn.addEventListener('click', computeTestMatch);
   }
 
-  const navBtns = document.querySelectorAll('.nav-btn');
-  const tabContents = document.querySelectorAll('.tab-content');
+  // IRC-style view switching
+  const views = document.querySelectorAll('.pane-view');
 
-  navBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      // Remove active class from all
-      navBtns.forEach(b => b.classList.remove('active'));
-      tabContents.forEach(c => c.classList.remove('active'));
+  window.switchView = function(viewId: string) {
+    views.forEach(v => v.classList.remove('active'));
+    const target = document.getElementById(`view-${viewId}`);
+    if (target) {
+      target.classList.add('active');
+    }
+  };
 
-      // Add active class to clicked
-      btn.classList.add('active');
-      const tabId = btn.getAttribute('data-tab');
-      if (tabId) {
-        document.getElementById(`tab-${tabId}`)?.classList.add('active');
-      }
-    });
-  });
+  document.getElementById('btn-show-compose')?.addEventListener('click', () => switchView('compose'));
+  document.getElementById('btn-show-settings')?.addEventListener('click', () => switchView('settings'));
+  document.getElementById('btn-show-test')?.addEventListener('click', () => switchView('test'));
+
 });
+
+declare global {
+  interface Window {
+    switchView: (viewId: string) => void;
+  }
+}
