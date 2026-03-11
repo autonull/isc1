@@ -1,15 +1,18 @@
 import { browserTierDetector, browserModel } from '@isc/adapters';
 import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel } from '@isc/core';
+import { initNode } from './network';
 
 // Global ISC state
 const appState: {
   tier: string;
   keypair: Keypair | null;
   modelReady: boolean;
+  p2pNode: any;
 } = {
   tier: 'unknown',
   keypair: null,
   modelReady: false,
+  p2pNode: null,
 };
 
 async function initISC() {
@@ -37,6 +40,10 @@ async function initISC() {
       console.log('Minimal tier detected. Skipping model load (word-hash fallback).');
       appState.modelReady = true;
     }
+
+    // 4. Start P2P Networking
+    console.log('Starting libp2p node...');
+    appState.p2pNode = await initNode(appState.keypair);
 
     // Enable test match button
     const testBtn = document.getElementById('btn-test-match') as HTMLButtonElement;
