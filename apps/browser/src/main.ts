@@ -14,6 +14,7 @@ interface ChatMessageLog {
   sender: 'self' | 'peer';
   text: string;
   timestamp: number;
+  isPending?: boolean;
 }
 
 // Global ISC state
@@ -119,6 +120,15 @@ export async function flushOfflineQueue() {
           }
         }
       }
+      // Update UI state for posts to remove pending status
+      const postInState = appState.receivedPosts.find(p =>
+        p.signature === action.post.signature ||
+        (p.timestamp === action.post.timestamp && p.author === action.post.author)
+      );
+      if (postInState) {
+        postInState.isPending = false;
+        renderRecentPosts();
+      }
     } else if (action.type === 'chat') {
       if (appState.p2pNode && action.peerId) {
         try {
@@ -128,6 +138,15 @@ export async function flushOfflineQueue() {
           await sendChatMessage(stream, action.msg);
         } catch (e) {
           console.warn(`Failed to send queued chat to ${action.peerId}`, e);
+        }
+      }
+
+      // Remove pending status from chats
+      if (appState.activeChats[action.peerId]) {
+        const targetChat = appState.activeChats[action.peerId].find(c => c.timestamp === action.msg.timestamp && c.text === action.msg.msg);
+        if (targetChat) {
+          targetChat.isPending = false;
+          renderChatPanel();
         }
       }
     }
@@ -446,6 +465,16 @@ function renderChatPanel() {
     const msgDiv = document.createElement('div');
     msgDiv.className = `chat-message ${msg.sender}`;
     msgDiv.textContent = msg.text;
+
+    if (msg.isPending) {
+      msgDiv.style.opacity = '0.6';
+      msgDiv.title = 'Pending (Offline)';
+      const pendingIcon = document.createElement('span');
+      pendingIcon.textContent = ' 🕒';
+      pendingIcon.style.fontSize = '0.8em';
+      msgDiv.appendChild(pendingIcon);
+    }
+
     messagesEl.appendChild(msgDiv);
   });
 
@@ -466,10 +495,14 @@ async function sendActiveChatMessage() {
     appState.activeChats[peerId] = [];
   }
 
+  const isOffline = !navigator.onLine;
+  const nowTimestamp = Date.now();
+
   appState.activeChats[peerId].push({
     sender: 'self',
     text,
-    timestamp: Date.now()
+    timestamp: nowTimestamp,
+    isPending: isOffline
   });
 
   // Clear input and update UI
@@ -481,10 +514,10 @@ async function sendActiveChatMessage() {
   const msgPayload = {
     channelID: appState.activeChannelId || 'unknown',
     msg: text,
-    timestamp: Date.now()
+    timestamp: nowTimestamp
   };
 
-  if (!navigator.onLine) {
+  if (isOffline) {
     await enqueueOfflineAction({ type: 'chat', peerId, msg: msgPayload });
     console.log(`Queued chat message for ${peerId} (offline)`);
     return;
@@ -657,6 +690,16 @@ export function renderRecentPosts() {
       offTopicSpan.style.marginLeft = '0.5rem';
       offTopicSpan.textContent = 'Off-Topic';
       header.appendChild(offTopicSpan);
+    }
+
+    if (post.isPending) {
+      const pendingSpan = document.createElement('span');
+      pendingSpan.style.color = 'var(--primary)';
+      pendingSpan.style.fontSize = 'var(--font-size-xs)';
+      pendingSpan.style.marginLeft = '0.5rem';
+      pendingSpan.innerHTML = '🕒 Pending';
+      header.appendChild(pendingSpan);
+      card.style.border = '1px dashed var(--border-subtle)';
     }
 
     const flagBtn = document.createElement('button');
@@ -1333,11 +1376,17 @@ function setupCompose() {
         const peerId = appState.p2pNode.peerId.toString();
         const post = await createSignedPost(appState.keypair!, peerId, desc, 'temp-id', embedding);
 
+        const isOffline = !navigator.onLine;
+        post.isPending = isOffline;
+
         // Add to our own stream locally
         appState.receivedPosts.unshift(post);
         renderRecentPosts();
 
-        if (!navigator.onLine) {
+        // Reset form immediately for optimistic feel
+        inputPostInline.value = '';
+
+        if (isOffline) {
           await enqueueOfflineAction({ type: 'post', post });
           console.log('Post queued for offline sync.');
         } else {
@@ -1386,9 +1435,6 @@ function setupCompose() {
           }
           console.log(`Post published to ${sentCount} peer(s)!`);
         }
-
-        // Reset form
-        inputPostInline.value = '';
 
       } catch (err: any) {
         console.error('Failed to broadcast post:', err);
