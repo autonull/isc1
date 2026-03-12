@@ -8,8 +8,30 @@ export interface RateLimitConfig {
   windowMs: number;
 }
 
+export const RATE_LIMITS = {
+  ANNOUNCE: { maxRequests: 5, windowMs: 60 * 1000 },
+  DELEGATE_REQUEST: { maxRequests: 3, windowMs: 60 * 1000 },
+  DELEGATE_RESPONSE_CONCURRENT: { maxRequests: 10, windowMs: 0 },
+  CHAT_DIAL: { maxRequests: 20, windowMs: 60 * 60 * 1000 },
+  DHT_QUERY: { maxRequests: 30, windowMs: 60 * 1000 }
+};
+
 export class RateLimiter {
   private limits: Map<string, Map<string, RateLimitInfo>> = new Map();
+
+  /**
+   * Loads state, useful for ephemeral CLI runs.
+   */
+  public loadState(state: Map<string, Map<string, RateLimitInfo>>) {
+    this.limits = state;
+  }
+
+  /**
+   * Gets state, useful for ephemeral CLI runs.
+   */
+  public getState(): Map<string, Map<string, RateLimitInfo>> {
+    return this.limits;
+  }
 
   /**
    * Checks if an action is allowed for a given peer and increments the counter.

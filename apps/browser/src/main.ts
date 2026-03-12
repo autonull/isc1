@@ -1,5 +1,5 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -1296,7 +1296,7 @@ export function renderChannels() {
             btn.textContent = 'Tap to chat';
             btn.addEventListener('click', () => {
               const myPeerId = appState.p2pNode?.peerId.toString();
-              if (myPeerId && !appState.rateLimiter.attempt(myPeerId, 'chatDial', { maxRequests: 20, windowMs: 3600000 })) {
+              if (myPeerId && !appState.rateLimiter.attempt(myPeerId, 'chatDial', RATE_LIMITS.CHAT_DIAL)) {
                 alert('Rate limit exceeded for Chat Dial (20/hr). Please try again later.');
                 return;
               }
@@ -1499,7 +1499,7 @@ export async function announceAndDiscover(channel: SavedChannel) {
   if (!appState.p2pNode || !channel.distributions || channel.distributions.length === 0) return;
 
   const peerIdStr = appState.p2pNode.peerId.toString();
-  if (!appState.rateLimiter.attempt(peerIdStr, 'announce', { maxRequests: 5, windowMs: 60000 })) {
+  if (!appState.rateLimiter.attempt(peerIdStr, 'announce', RATE_LIMITS.ANNOUNCE)) {
     console.warn('Rate limit exceeded for DHT Announce (5/min).');
     return;
   }
