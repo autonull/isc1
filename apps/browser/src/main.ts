@@ -1051,21 +1051,8 @@ export function renderChannels() {
   }
 }
 
-export async function createChannel(name: string, description: string, spread: number, relations: any[] = []) {
-  if (!appState.modelReady) {
-    // Model isn't fully ready yet, but allow fallback for test
-    console.warn('Model not completely ready, proceeding with fallback if available');
-  }
-
-  const channel: SavedChannel = {
-    id: Math.random().toString(36).substring(2, 10),
-    name,
-    description,
-    spread,
-    relations: relations.length > 0 ? relations : undefined,
-  };
-
-  const embedFn = async (text: string) => {
+function getEmbeddingHelper() {
+  return async (text: string) => {
     if (appState.tier === 'high' || appState.tier === 'mid') {
       try {
         const result = await browserModel.embed(text);
@@ -1105,6 +1092,8 @@ export async function createChannel(name: string, description: string, spread: n
       }
 
       try {
+        if (!appState.p2pNode) throw new Error("No network node");
+
         const stream = await appState.p2pNode.dialProtocol(
           targetMultiaddr,
           PROTOCOL_DELEGATE
@@ -1159,6 +1148,23 @@ export async function createChannel(name: string, description: string, spread: n
       }
     }
   };
+}
+
+export async function createChannel(name: string, description: string, spread: number, relations: any[] = []) {
+  if (!appState.modelReady) {
+    // Model isn't fully ready yet, but allow fallback for test
+    console.warn('Model not completely ready, proceeding with fallback if available');
+  }
+
+  const channel: SavedChannel = {
+    id: Math.random().toString(36).substring(2, 10),
+    name,
+    description,
+    spread,
+    relations: relations.length > 0 ? relations : undefined,
+  };
+
+  const embedFn = getEmbeddingHelper();
 
   channel.distributions = await computeRelationalDistributions(channel, embedFn, appState.tier);
 
@@ -1365,13 +1371,8 @@ function setupCompose() {
       (btnPostInline as HTMLButtonElement).disabled = true;
 
       try {
-        let embedding: number[] = [];
-        if (appState.tier === 'high' || appState.tier === 'mid') {
-           embedding = await browserModel.embed(desc);
-        } else {
-           // Provide fallback for simplicity since mock node has it configured
-           embedding = new Array(384).fill(0).map((_, i) => Math.sin(desc.length * i));
-        }
+        const embedFn = getEmbeddingHelper();
+        const embedding = await embedFn(desc);
 
         const peerId = appState.p2pNode.peerId.toString();
         const post = await createSignedPost(appState.keypair!, peerId, desc, 'temp-id', embedding);
