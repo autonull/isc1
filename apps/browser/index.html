@@ -48,6 +48,12 @@
               <h1><span class="status-dot">●</span> Select or create a channel</h1>
             </div>
           </header>
+
+          <div class="feed-tabs" style="display: flex; gap: 1rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem; margin-bottom: 1rem;">
+            <button id="tab-for-you" class="btn-tab active" style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-weight: bold;">For You</button>
+            <button id="tab-following" class="btn-tab" style="background: none; border: none; color: var(--text-secondary); cursor: pointer;">Following</button>
+          </div>
+
           <div class="channel-feed" id="discover-recent-posts">
             <p style="padding: 2rem; color: var(--text-secondary); text-align: center;">No recent posts from peers yet.</p>
           </div>

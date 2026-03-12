@@ -35,6 +35,8 @@ export const appState: {
   offlineQueue: any[];
   rateLimiter: RateLimiter;
   supernodeHealth: { [peerId: string]: any };
+  activeFeed: 'for-you' | 'following';
+  followedPeers: string[];
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -50,7 +52,9 @@ export const appState: {
   reputation: {},
   offlineQueue: [],
   rateLimiter: new RateLimiter(),
-  supernodeHealth: {}
+  supernodeHealth: {},
+  activeFeed: 'for-you',
+  followedPeers: []
 };
 
 async function loadSavedData() {
@@ -76,8 +80,21 @@ async function loadSavedData() {
     if (savedQueue && Array.isArray(savedQueue)) {
       appState.offlineQueue = savedQueue;
     }
+
+    const savedFollowedPeers = await browserStorage.get<string[]>('isc:followed_peers');
+    if (savedFollowedPeers && Array.isArray(savedFollowedPeers)) {
+      appState.followedPeers = savedFollowedPeers;
+    }
   } catch (err) {
     console.error('Failed to load saved data:', err);
+  }
+}
+
+export async function saveFollowedPeers() {
+  try {
+    await browserStorage.set('isc:followed_peers', appState.followedPeers);
+  } catch (err) {
+    console.error('Failed to save followed peers:', err);
   }
 }
 
@@ -637,27 +654,37 @@ export function renderRecentPosts() {
   const container = document.getElementById('discover-recent-posts');
   if (!container) return;
 
-  if (appState.receivedPosts.length === 0) {
-    container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>';
-    return;
-  }
 
   const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
 
-  // Score and sort posts by similarity to the current channel
+  // Filter posts based on active feed
   let postsToRender = [...appState.receivedPosts];
-  if (activeChannel && activeChannel.distributions) {
+  if (appState.activeFeed === 'following') {
+    postsToRender = postsToRender.filter(p => appState.followedPeers.includes(p.author));
+  }
+
+  // Score and sort posts by similarity to the current channel
+  if (appState.activeFeed === 'for-you' && activeChannel && activeChannel.distributions) {
     postsToRender.sort((a, b) => {
       const coherenceA = checkPostCoherence(a, activeChannel.distributions!);
       const coherenceB = checkPostCoherence(b, activeChannel.distributions!);
       return coherenceB - coherenceA; // Descending
     });
   } else {
-    // If no active channel, just show newest first
+    // For "Following" feed or if no active channel, sort by newest first
     postsToRender.sort((a, b) => b.timestamp - a.timestamp);
   }
 
   container.innerHTML = '';
+
+  if (postsToRender.length === 0) {
+    if (appState.activeFeed === 'following') {
+      container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No posts from followed peers yet.</p>';
+    } else {
+      container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>';
+    }
+    return;
+  }
   for (const post of postsToRender) {
     const card = document.createElement('div');
     card.className = 'card match-card';
@@ -703,9 +730,30 @@ export function renderRecentPosts() {
       card.style.border = '1px dashed var(--border-subtle)';
     }
 
+    const isFollowing = appState.followedPeers.includes(post.author);
+    const followBtn = document.createElement('button');
+    followBtn.className = 'btn-icon';
+    followBtn.style.marginLeft = 'auto';
+    followBtn.style.fontSize = 'var(--font-size-xs)';
+    followBtn.textContent = isFollowing ? 'Unfollow' : 'Follow';
+    followBtn.addEventListener('click', async () => {
+      if (isFollowing) {
+        appState.followedPeers = appState.followedPeers.filter(p => p !== post.author);
+        followBtn.textContent = 'Follow';
+      } else {
+        appState.followedPeers.push(post.author);
+        followBtn.textContent = 'Unfollow';
+      }
+      await saveFollowedPeers();
+      if (appState.activeFeed === 'following') {
+         renderRecentPosts();
+      }
+    });
+    header.appendChild(followBtn);
+
     const flagBtn = document.createElement('button');
     flagBtn.className = 'btn-icon';
-    flagBtn.style.marginLeft = 'auto';
+    flagBtn.style.marginLeft = '0.5rem';
     flagBtn.style.fontSize = 'var(--font-size-xs)';
     flagBtn.textContent = '🚩 Flag';
     flagBtn.addEventListener('click', async () => {
@@ -1491,6 +1539,38 @@ document.addEventListener('DOMContentLoaded', () => {
   const testBtn = document.getElementById('btn-test-match');
   if (testBtn) {
     testBtn.addEventListener('click', computeTestMatch);
+  }
+
+  // Feed tabs logic
+  const tabForYou = document.getElementById('tab-for-you');
+  const tabFollowing = document.getElementById('tab-following');
+
+  if (tabForYou && tabFollowing) {
+    tabForYou.addEventListener('click', () => {
+      appState.activeFeed = 'for-you';
+      tabForYou.classList.add('active');
+      tabForYou.style.color = 'var(--text-primary)';
+      tabForYou.style.fontWeight = 'bold';
+
+      tabFollowing.classList.remove('active');
+      tabFollowing.style.color = 'var(--text-secondary)';
+      tabFollowing.style.fontWeight = 'normal';
+
+      renderRecentPosts();
+    });
+
+    tabFollowing.addEventListener('click', () => {
+      appState.activeFeed = 'following';
+      tabFollowing.classList.add('active');
+      tabFollowing.style.color = 'var(--text-primary)';
+      tabFollowing.style.fontWeight = 'bold';
+
+      tabForYou.classList.remove('active');
+      tabForYou.style.color = 'var(--text-secondary)';
+      tabForYou.style.fontWeight = 'normal';
+
+      renderRecentPosts();
+    });
   }
 
   // IRC-style view switching

@@ -102,7 +102,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| Posts & semantic feeds ("For You" + "Following") | 🔲 | P0 |
+| Posts & semantic feeds ("For You" + "Following") | ✅ | P0 |
 | Reactions (likes, reposts, replies, quotes) | 🔲 | P0 |
 | Profiles & follow / Web of Trust | 🔲 | P0 |
 | Communities — shared channel distributions | 🔲 | P1 |
