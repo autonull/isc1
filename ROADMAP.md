@@ -68,7 +68,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Reputation system + signed moderation events | ✅ | P0 |
 | Offline-first: queue + background sync | ✅ | P1 |
 | Delegation health metrics + supernode ranking | ✅ | P1 |
-| PWA — installable on mobile, offline-capable shell | 🔲 | P1 |
+| PWA — installable on mobile, offline-capable shell | ✅ | P1 |
 | IPFS deployment — zero-infra hosting | 🔲 | P2 |
 | Community model registry + migration tooling | 🔲 | P2 |
 
