@@ -3,6 +3,7 @@ import { generateKeypair, Keypair, computeRelationalDistributions, relationalMat
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
+import { registerSW } from 'virtual:pwa-register';
 
 import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth } from '@isc/protocol';
 
@@ -1448,6 +1449,9 @@ function setupCompose() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Register service worker
+  registerSW({ immediate: true });
+
   // Initialize the ISC core modules
   initISC().then(() => {
     renderChannels();
