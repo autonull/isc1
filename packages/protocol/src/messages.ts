@@ -3,6 +3,7 @@ export const PROTOCOL_DELEGATE = '/isc/delegate/1.0';
 export const PROTOCOL_ANNOUNCE = '/isc/announce/1.0';
 export const PROTOCOL_MODERATION = '/isc/moderation/1.0';
 export const PROTOCOL_DELEGATION_HEALTH = '/isc/delegation_health/1.0';
+export const PROTOCOL_REACTION = '/isc/reaction/1.0';
 
 export interface DelegationHealth {
   type: 'delegation_health';

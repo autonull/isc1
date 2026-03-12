@@ -13,6 +13,14 @@ export interface SignedPost {
   ttl: number;
   signature: Uint8Array;
   isPending?: boolean;
+
+  // Reactions arrays (populated locally or via network)
+  likes?: string[]; // Array of peer IDs
+  reposts?: string[]; // Array of peer IDs
+  replies?: SignedPost[]; // Array of reply posts
+
+  // Optional Quote references
+  quoteOf?: string; // targetPostID
 }
 
 export interface PostPayload {
@@ -24,6 +32,18 @@ export interface PostPayload {
   embedding: number[];
   timestamp: number;
   ttl: number;
+  quoteOf?: string;
+}
+
+export interface ReactionPayload {
+  type: 'like' | 'repost';
+  targetPostID: string;
+  author: string;
+  timestamp: number;
+}
+
+export interface SignedReaction extends ReactionPayload {
+  signature: Uint8Array;
 }
 
 export interface CommunityReport {
@@ -53,7 +73,8 @@ export async function createSignedPost(
   content: string,
   channelID: string,
   embedding: number[],
-  ttl: number = 86400000 // default 24h
+  ttl: number = 86400000, // default 24h
+  quoteOf?: string
 ): Promise<SignedPost> {
   const payload: PostPayload = {
     type: 'post',
@@ -64,6 +85,32 @@ export async function createSignedPost(
     embedding,
     timestamp: Date.now(),
     ttl,
+    ...(quoteOf ? { quoteOf } : {})
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature,
+    likes: [],
+    reposts: [],
+    replies: []
+  };
+}
+
+export async function createSignedReaction(
+  keypair: Keypair,
+  peerID: string,
+  targetPostID: string,
+  type: 'like' | 'repost'
+): Promise<SignedReaction> {
+  const payload: ReactionPayload = {
+    type,
+    targetPostID,
+    author: peerID,
+    timestamp: Date.now()
   };
 
   const encoded = encodePayload(payload);
