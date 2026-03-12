@@ -3,6 +3,8 @@ import { fromString, toString } from 'uint8arrays';
 import { SignedPost } from '@isc/core';
 
 export const PROTOCOL_POST = '/isc/post/1.0';
+export const PROTOCOL_REPLY = '/isc/reply/1.0';
+export const PROTOCOL_QUOTE = '/isc/quote/1.0';
 
 /**
  * Handles incoming post streams and yields parsed SignedPost.
@@ -46,6 +48,94 @@ export async function sendPostMessage(stream: any, post: SignedPost) {
     );
   } catch (err) {
     console.error('Error sending post message', err);
+    throw err;
+  }
+}
+
+/**
+ * Handles incoming reply streams and yields parsed SignedPost.
+ */
+export async function handleIncomingReply(stream: any, onReply: (msg: SignedPost) => void) {
+  try {
+    await pipe(
+      stream.source,
+      async function (source: AsyncIterable<Uint8Array>) {
+        for await (const chunk of source) {
+          try {
+            const str = toString(chunk);
+            const msg: SignedPost = JSON.parse(str);
+            if (msg.signature && typeof msg.signature === 'object') {
+              msg.signature = Uint8Array.from(Object.values(msg.signature));
+            }
+            onReply(msg);
+          } catch (e) {
+            console.warn('Failed to parse incoming reply message', e);
+          }
+        }
+      }
+    );
+  } catch (err) {
+    console.error('Error handling reply stream', err);
+  }
+}
+
+/**
+ * Sends a reply message over an established stream.
+ */
+export async function sendReplyMessage(stream: any, reply: SignedPost) {
+  try {
+    const serialized = JSON.stringify(reply);
+    const chunk = fromString(serialized);
+    await pipe(
+      [chunk],
+      stream.sink
+    );
+  } catch (err) {
+    console.error('Error sending reply message', err);
+    throw err;
+  }
+}
+
+/**
+ * Handles incoming quote streams and yields parsed SignedPost.
+ */
+export async function handleIncomingQuote(stream: any, onQuote: (msg: SignedPost) => void) {
+  try {
+    await pipe(
+      stream.source,
+      async function (source: AsyncIterable<Uint8Array>) {
+        for await (const chunk of source) {
+          try {
+            const str = toString(chunk);
+            const msg: SignedPost = JSON.parse(str);
+            if (msg.signature && typeof msg.signature === 'object') {
+              msg.signature = Uint8Array.from(Object.values(msg.signature));
+            }
+            onQuote(msg);
+          } catch (e) {
+            console.warn('Failed to parse incoming quote message', e);
+          }
+        }
+      }
+    );
+  } catch (err) {
+    console.error('Error handling quote stream', err);
+  }
+}
+
+/**
+ * Sends a quote message over an established stream.
+ */
+export async function sendQuoteMessage(stream: any, quote: SignedPost) {
+  try {
+    const serialized = JSON.stringify(quote);
+    const chunk = fromString(serialized);
+    await pipe(
+      [chunk],
+      stream.sink
+    );
+  } catch (err) {
+    console.error('Error sending quote message', err);
     throw err;
   }
 }

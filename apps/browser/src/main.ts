@@ -5,7 +5,7 @@ import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { registerSW } from 'virtual:pwa-register';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_REPLY, handleIncomingReply, sendReplyMessage, PROTOCOL_QUOTE, handleIncomingQuote, sendQuoteMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage } from '@isc/protocol';
 import { createSignedReaction } from '@isc/core';
 
 export interface SavedChannel extends Channel {
@@ -316,6 +316,37 @@ async function initISC() {
         console.log('Received post:', post);
         appState.receivedPosts.unshift(post);
         recordInteraction(post.author, 'post_reaction', true);
+        renderRecentPosts();
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_REPLY, (data: any) => {
+      handleIncomingReply(data.stream, (reply) => {
+        console.log('Received reply:', reply);
+        // Add to main feed so it can be replied to itself
+        if (!appState.receivedPosts.find(p => p.postID === reply.postID)) {
+          appState.receivedPosts.unshift(reply);
+        }
+
+        if (reply.replyTo) {
+          const parent = appState.receivedPosts.find(p => p.postID === reply.replyTo);
+          if (parent) {
+            parent.replies = parent.replies || [];
+            if (!parent.replies.find(r => r.postID === reply.postID)) {
+              parent.replies.push(reply);
+              renderRecentPosts();
+            }
+          } else {
+             renderRecentPosts();
+          }
+        }
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_QUOTE, (data: any) => {
+      handleIncomingQuote(data.stream, (quote) => {
+        console.log('Received quote:', quote);
+        appState.receivedPosts.unshift(quote);
         renderRecentPosts();
       });
     });
@@ -866,24 +897,85 @@ export function renderRecentPosts() {
       }
     });
 
-    // Reply button (placeholder)
+    // Reply button
     const replyBtn = document.createElement('button');
     replyBtn.className = 'btn-icon';
     replyBtn.style.fontSize = 'var(--font-size-sm)';
     replyBtn.innerHTML = `💬`;
-    replyBtn.addEventListener('click', () => {
-       alert('Reply UI not yet implemented in Phase 1 shell. Check console for ID.');
-       console.log('Replying to post ID:', post.postID);
+    replyBtn.addEventListener('click', async () => {
+       const replyContent = prompt('Reply to this post:');
+       if (!replyContent || !appState.keypair || !appState.p2pNode) return;
+
+       const embedFn = getEmbeddingHelper();
+       const embedding = await embedFn(replyContent);
+       const peerId = appState.p2pNode.peerId.toString();
+
+       const replyPost = await createSignedPost(
+         appState.keypair,
+         peerId,
+         replyContent,
+         post.channelID,
+         embedding,
+         86400000,
+         undefined, // quoteOf
+         post.postID // replyTo
+       );
+
+       appState.receivedPosts.unshift(replyPost);
+       post.replies = post.replies || [];
+       post.replies.push(replyPost);
+       renderRecentPosts();
+
+       // Broadcast
+       const connections = appState.p2pNode.getConnections();
+       for (const conn of connections) {
+         try {
+           const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_REPLY);
+           await sendReplyMessage(stream, replyPost);
+         } catch (e) {
+           console.warn(`Failed to send reply to ${conn.remotePeer.toString()}`);
+         }
+       }
     });
 
-    // Quote button (placeholder)
+    // Quote button
     const quoteBtn = document.createElement('button');
     quoteBtn.className = 'btn-icon';
     quoteBtn.style.fontSize = 'var(--font-size-sm)';
     quoteBtn.innerHTML = `❞`;
-    quoteBtn.addEventListener('click', () => {
-       alert('Quote UI not yet implemented in Phase 1 shell. Check console for ID.');
-       console.log('Quoting post ID:', post.postID);
+    quoteBtn.addEventListener('click', async () => {
+       const quoteContent = prompt('Add commentary to this quote:');
+       if (!quoteContent || !appState.keypair || !appState.p2pNode) return;
+
+       const embedFn = getEmbeddingHelper();
+       // "Embed original + commentary as a fused vector" for Quote per SOCIAL.md
+       const fusedText = `${post.content} ${quoteContent}`;
+       const embedding = await embedFn(fusedText);
+       const peerId = appState.p2pNode.peerId.toString();
+
+       const quotePost = await createSignedPost(
+         appState.keypair,
+         peerId,
+         quoteContent,
+         post.channelID,
+         embedding,
+         86400000,
+         post.postID // quoteOf
+       );
+
+       appState.receivedPosts.unshift(quotePost);
+       renderRecentPosts();
+
+       // Broadcast
+       const connections = appState.p2pNode.getConnections();
+       for (const conn of connections) {
+         try {
+           const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_QUOTE);
+           await sendQuoteMessage(stream, quotePost);
+         } catch (e) {
+           console.warn(`Failed to send quote to ${conn.remotePeer.toString()}`);
+         }
+       }
     });
 
     reactionBar.appendChild(likeBtn);
@@ -893,7 +985,55 @@ export function renderRecentPosts() {
 
     card.appendChild(header);
     card.appendChild(content);
+
+    // Render Quoted Post
+    if (post.quoteOf) {
+      const quotedPost = appState.receivedPosts.find(p => p.postID === post.quoteOf);
+      const quoteBlock = document.createElement('blockquote');
+      quoteBlock.style.borderLeft = '4px solid var(--accent-primary)';
+      quoteBlock.style.paddingLeft = '1rem';
+      quoteBlock.style.marginLeft = '0';
+      quoteBlock.style.marginTop = '1rem';
+      quoteBlock.style.color = 'var(--text-secondary)';
+      quoteBlock.style.fontSize = '0.9em';
+
+      if (quotedPost) {
+        const strong = document.createElement('strong');
+        strong.textContent = `${quotedPost.author.substring(0, 12)}...`;
+        quoteBlock.appendChild(strong);
+        quoteBlock.appendChild(document.createElement('br'));
+        quoteBlock.appendChild(document.createTextNode(quotedPost.content));
+      } else {
+        quoteBlock.textContent = `[Quoted Post Not Found locally: ${post.quoteOf}]`;
+      }
+      card.appendChild(quoteBlock);
+    }
+
     card.appendChild(reactionBar);
+
+    // Render Replies
+    if (post.replies && post.replies.length > 0) {
+      const repliesContainer = document.createElement('div');
+      repliesContainer.style.marginTop = '1rem';
+      repliesContainer.style.paddingTop = '0.5rem';
+      repliesContainer.style.borderTop = '1px solid var(--border-subtle)';
+      repliesContainer.style.marginLeft = '1rem';
+
+      post.replies.forEach(reply => {
+        const replyEl = document.createElement('div');
+        replyEl.style.marginBottom = '0.5rem';
+        replyEl.style.fontSize = '0.9em';
+
+        const strong = document.createElement('strong');
+        strong.textContent = `${reply.author.substring(0, 12)}...`;
+        replyEl.appendChild(strong);
+        replyEl.appendChild(document.createTextNode(`: ${reply.content}`));
+
+        repliesContainer.appendChild(replyEl);
+      });
+      card.appendChild(repliesContainer);
+    }
+
     container.appendChild(card);
   }
 }

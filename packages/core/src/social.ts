@@ -21,6 +21,9 @@ export interface SignedPost {
 
   // Optional Quote references
   quoteOf?: string; // targetPostID
+
+  // Optional Reply reference
+  replyTo?: string; // targetPostID
 }
 
 export interface PostPayload {
@@ -33,6 +36,7 @@ export interface PostPayload {
   timestamp: number;
   ttl: number;
   quoteOf?: string;
+  replyTo?: string;
 }
 
 export interface ReactionPayload {
@@ -74,7 +78,8 @@ export async function createSignedPost(
   channelID: string,
   embedding: number[],
   ttl: number = 86400000, // default 24h
-  quoteOf?: string
+  quoteOf?: string,
+  replyTo?: string
 ): Promise<SignedPost> {
   const payload: PostPayload = {
     type: 'post',
@@ -85,7 +90,8 @@ export async function createSignedPost(
     embedding,
     timestamp: Date.now(),
     ttl,
-    ...(quoteOf ? { quoteOf } : {})
+    ...(quoteOf ? { quoteOf } : {}),
+    ...(replyTo ? { replyTo } : {})
   };
 
   const encoded = encodePayload(payload);
@@ -154,7 +160,9 @@ export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promis
     channelID: post.channelID,
     embedding: post.embedding,
     timestamp: post.timestamp,
-    ttl: post.ttl
+    ttl: post.ttl,
+    ...(post.quoteOf ? { quoteOf: post.quoteOf } : {}),
+    ...(post.replyTo ? { replyTo: post.replyTo } : {})
   };
   const encoded = encodePayload(payload);
   return await verify(encoded, post.signature, publicKey);
