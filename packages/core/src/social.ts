@@ -12,6 +12,7 @@ export interface SignedPost {
   timestamp: number;
   ttl: number;
   signature: Uint8Array;
+  isPending?: boolean;
 }
 
 export interface PostPayload {

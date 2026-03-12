@@ -3,6 +3,7 @@ import { generateKeypair, Keypair, computeRelationalDistributions, relationalMat
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
+import { registerSW } from 'virtual:pwa-register';
 
 import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth } from '@isc/protocol';
 
@@ -14,6 +15,7 @@ interface ChatMessageLog {
   sender: 'self' | 'peer';
   text: string;
   timestamp: number;
+  isPending?: boolean;
 }
 
 // Global ISC state
@@ -119,6 +121,15 @@ export async function flushOfflineQueue() {
           }
         }
       }
+      // Update UI state for posts to remove pending status
+      const postInState = appState.receivedPosts.find(p =>
+        p.signature === action.post.signature ||
+        (p.timestamp === action.post.timestamp && p.author === action.post.author)
+      );
+      if (postInState) {
+        postInState.isPending = false;
+        renderRecentPosts();
+      }
     } else if (action.type === 'chat') {
       if (appState.p2pNode && action.peerId) {
         try {
@@ -130,6 +141,15 @@ export async function flushOfflineQueue() {
           console.warn(`Failed to send queued chat to ${action.peerId}`, e);
         }
       }
+
+      // Remove pending status from chats
+      if (appState.activeChats[action.peerId]) {
+        const targetChat = appState.activeChats[action.peerId].find(c => c.timestamp === action.msg.timestamp && c.text === action.msg.msg);
+        if (targetChat) {
+          targetChat.isPending = false;
+          renderChatPanel();
+        }
+      }
     }
   }
 }
@@ -137,6 +157,12 @@ export async function flushOfflineQueue() {
 window.addEventListener('online', () => {
   console.log('Browser came online. Initiating background sync...');
   flushOfflineQueue();
+  renderChannels();
+});
+
+window.addEventListener('offline', () => {
+  console.log('Browser went offline.');
+  renderChannels();
 });
 
 export async function saveChannels() {
@@ -440,6 +466,16 @@ function renderChatPanel() {
     const msgDiv = document.createElement('div');
     msgDiv.className = `chat-message ${msg.sender}`;
     msgDiv.textContent = msg.text;
+
+    if (msg.isPending) {
+      msgDiv.style.opacity = '0.6';
+      msgDiv.title = 'Pending (Offline)';
+      const pendingIcon = document.createElement('span');
+      pendingIcon.textContent = ' 🕒';
+      pendingIcon.style.fontSize = '0.8em';
+      msgDiv.appendChild(pendingIcon);
+    }
+
     messagesEl.appendChild(msgDiv);
   });
 
@@ -460,10 +496,14 @@ async function sendActiveChatMessage() {
     appState.activeChats[peerId] = [];
   }
 
+  const isOffline = !navigator.onLine;
+  const nowTimestamp = Date.now();
+
   appState.activeChats[peerId].push({
     sender: 'self',
     text,
-    timestamp: Date.now()
+    timestamp: nowTimestamp,
+    isPending: isOffline
   });
 
   // Clear input and update UI
@@ -475,10 +515,10 @@ async function sendActiveChatMessage() {
   const msgPayload = {
     channelID: appState.activeChannelId || 'unknown',
     msg: text,
-    timestamp: Date.now()
+    timestamp: nowTimestamp
   };
 
-  if (!navigator.onLine) {
+  if (isOffline) {
     await enqueueOfflineAction({ type: 'chat', peerId, msg: msgPayload });
     console.log(`Queued chat message for ${peerId} (offline)`);
     return;
@@ -651,6 +691,16 @@ export function renderRecentPosts() {
       offTopicSpan.style.marginLeft = '0.5rem';
       offTopicSpan.textContent = 'Off-Topic';
       header.appendChild(offTopicSpan);
+    }
+
+    if (post.isPending) {
+      const pendingSpan = document.createElement('span');
+      pendingSpan.style.color = 'var(--primary)';
+      pendingSpan.style.fontSize = 'var(--font-size-xs)';
+      pendingSpan.style.marginLeft = '0.5rem';
+      pendingSpan.innerHTML = '🕒 Pending';
+      header.appendChild(pendingSpan);
+      card.style.border = '1px dashed var(--border-subtle)';
     }
 
     const flagBtn = document.createElement('button');
@@ -978,7 +1028,19 @@ export function renderChannels() {
         (document.getElementById('matches-nearby') as HTMLElement).style.display = matchesNearby.childElementCount > 0 ? 'block' : 'none';
         (document.getElementById('matches-orbiting') as HTMLElement).style.display = matchesOrbiting.childElementCount > 0 ? 'block' : 'none';
 
-        if (discoveredPeerIds.length === 0) {
+        if (!navigator.onLine) {
+          (document.getElementById('matches-orbiting') as HTMLElement).style.display = 'block';
+          matchesOrbiting.innerHTML = `
+            <style>
+              @keyframes isc-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+              .isc-spinner { border: 3px solid var(--border-subtle, rgba(255,255,255,0.1)); border-top: 3px solid var(--primary, #6366F1); border-radius: 50%; width: 24px; height: 24px; animation: isc-spin 1s linear infinite; margin: 0 auto 10px auto; }
+            </style>
+            <div style="padding: 2rem 1rem; text-align: center; color: var(--text-secondary);">
+              <div class="isc-spinner"></div>
+              <p>Looking for the network…</p>
+            </div>
+          `;
+        } else if (discoveredPeerIds.length === 0) {
           (document.getElementById('matches-orbiting') as HTMLElement).style.display = 'block';
           matchesOrbiting.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">Looking for peers... (DHT queries may take a few moments)</p>';
         }
@@ -990,21 +1052,8 @@ export function renderChannels() {
   }
 }
 
-export async function createChannel(name: string, description: string, spread: number, relations: any[] = []) {
-  if (!appState.modelReady) {
-    // Model isn't fully ready yet, but allow fallback for test
-    console.warn('Model not completely ready, proceeding with fallback if available');
-  }
-
-  const channel: SavedChannel = {
-    id: Math.random().toString(36).substring(2, 10),
-    name,
-    description,
-    spread,
-    relations: relations.length > 0 ? relations : undefined,
-  };
-
-  const embedFn = async (text: string) => {
+function getEmbeddingHelper() {
+  return async (text: string) => {
     if (appState.tier === 'high' || appState.tier === 'mid') {
       try {
         const result = await browserModel.embed(text);
@@ -1044,6 +1093,8 @@ export async function createChannel(name: string, description: string, spread: n
       }
 
       try {
+        if (!appState.p2pNode) throw new Error("No network node");
+
         const stream = await appState.p2pNode.dialProtocol(
           targetMultiaddr,
           PROTOCOL_DELEGATE
@@ -1098,6 +1149,23 @@ export async function createChannel(name: string, description: string, spread: n
       }
     }
   };
+}
+
+export async function createChannel(name: string, description: string, spread: number, relations: any[] = []) {
+  if (!appState.modelReady) {
+    // Model isn't fully ready yet, but allow fallback for test
+    console.warn('Model not completely ready, proceeding with fallback if available');
+  }
+
+  const channel: SavedChannel = {
+    id: Math.random().toString(36).substring(2, 10),
+    name,
+    description,
+    spread,
+    relations: relations.length > 0 ? relations : undefined,
+  };
+
+  const embedFn = getEmbeddingHelper();
 
   channel.distributions = await computeRelationalDistributions(channel, embedFn, appState.tier);
 
@@ -1304,22 +1372,23 @@ function setupCompose() {
       (btnPostInline as HTMLButtonElement).disabled = true;
 
       try {
-        let embedding: number[] = [];
-        if (appState.tier === 'high' || appState.tier === 'mid') {
-           embedding = await browserModel.embed(desc);
-        } else {
-           // Provide fallback for simplicity since mock node has it configured
-           embedding = new Array(384).fill(0).map((_, i) => Math.sin(desc.length * i));
-        }
+        const embedFn = getEmbeddingHelper();
+        const embedding = await embedFn(desc);
 
         const peerId = appState.p2pNode.peerId.toString();
         const post = await createSignedPost(appState.keypair!, peerId, desc, 'temp-id', embedding);
+
+        const isOffline = !navigator.onLine;
+        post.isPending = isOffline;
 
         // Add to our own stream locally
         appState.receivedPosts.unshift(post);
         renderRecentPosts();
 
-        if (!navigator.onLine) {
+        // Reset form immediately for optimistic feel
+        inputPostInline.value = '';
+
+        if (isOffline) {
           await enqueueOfflineAction({ type: 'post', post });
           console.log('Post queued for offline sync.');
         } else {
@@ -1338,7 +1407,7 @@ function setupCompose() {
                 // libp2p kad-dht operates on the .services.dht object for general put/get
                 if (appState.p2pNode.services && appState.p2pNode.services.dht) {
                   // dht.put returns an AsyncGenerator, so we must iterate it to execute it
-                  for await (const event of appState.p2pNode.services.dht.put(keyBytes, postBytes)) {
+                  for await (const _event of appState.p2pNode.services.dht.put(keyBytes, postBytes)) {
                     // Just draining the generator
                   }
                   announceCount++;
@@ -1369,9 +1438,6 @@ function setupCompose() {
           console.log(`Post published to ${sentCount} peer(s)!`);
         }
 
-        // Reset form
-        inputPostInline.value = '';
-
       } catch (err: any) {
         console.error('Failed to broadcast post:', err);
       } finally {
@@ -1383,6 +1449,9 @@ function setupCompose() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Register service worker
+  registerSW({ immediate: true });
+
   // Initialize the ISC core modules
   initISC().then(() => {
     renderChannels();
