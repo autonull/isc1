@@ -2,8 +2,8 @@
 import { Command } from 'commander';
 import { cosineSimilarity, lshHash, Channel, computeRelationalDistributions, Distribution } from '@isc/core';
 import { nodeModel, nodeStorage } from '@isc/adapters';
-import { createSignedPost, generateKeypair } from '@isc/core';
-import { sendPostMessage, PROTOCOL_POST } from '@isc/protocol';
+import { createSignedPost, generateKeypair, RateLimiter, RATE_LIMITS } from '@isc/core';
+import { sendPostMessage, PROTOCOL_POST, sendChatMessage, PROTOCOL_CHAT } from '@isc/protocol';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
 import { noise } from '@libp2p/noise';
@@ -17,6 +17,7 @@ import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { toString as uint8ArrayToString } from 'uint8arrays/to-string';
 import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string';
+import { multiaddr } from '@multiformats/multiaddr';
 
 const program = new Command();
 
@@ -311,6 +312,52 @@ postCmd
     }
 
     console.log(`Post broadcasted successfully to ${sentCount} peers!`);
+    await node.stop();
+  });
+
+const chatCmd = program.command('chat').description('Chat operations');
+
+chatCmd
+  .command('send')
+  .description('Send a chat message to a peer')
+  .argument('<peerId>', 'Peer ID to send to')
+  .argument('<channelID>', 'Channel ID')
+  .argument('<message>', 'Message content')
+  .action(async (peerId: string, channelID: string, message: string) => {
+    // 1. Enforce Rate Limit
+    const rlState = await nodeStorage.get<any>('isc:ratelimits');
+    const limiter = new RateLimiter();
+    if (rlState) {
+      limiter.loadState(new Map(JSON.parse(rlState)));
+    }
+    limiter.cleanup();
+
+    if (!limiter.attempt('local_cli_user', 'CHAT_DIAL', RATE_LIMITS.CHAT_DIAL)) {
+      console.error(`Rate limit exceeded for CHAT_DIAL. Please wait before sending more messages.`);
+      return;
+    }
+
+    // Save updated state
+    const newState = JSON.stringify(Array.from(limiter.getState().entries()));
+    await nodeStorage.set('isc:ratelimits', newState);
+
+    const node = await initCliNode();
+
+    console.log(`Dialing peer ${peerId}...`);
+    try {
+      const targetAddr = peerId.includes('/p2p/') ? peerId : `/p2p/${peerId}`;
+      const stream = await node.dialProtocol(multiaddr(targetAddr), PROTOCOL_CHAT);
+      console.log(`Connected. Sending message...`);
+      await sendChatMessage(stream, {
+        channelID,
+        msg: message,
+        ephemeral: false
+      });
+      console.log(`Message sent successfully.`);
+    } catch (e) {
+      console.error(`Failed to send message to ${peerId}:`, e);
+    }
+
     await node.stop();
   });
 
