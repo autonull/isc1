@@ -36,9 +36,9 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 - [x] Simple profiles (mean vector)
 
 ### 4. Final Hardening
-- [ ] Run internal swarms (50+ virtual peers)
-- [ ] Protocol interop validation prep (document announce formats)
-- [ ] Update README with Quick Start scripts
+- [x] Run internal swarms (50+ virtual peers)
+- [x] Protocol interop validation prep (document announce formats)
+- [x] Update README with Quick Start scripts
 
 ---
 

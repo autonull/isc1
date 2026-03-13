@@ -13,8 +13,18 @@ A fully decentralized, browser-only social platform that uses in-browser LLM emb
 ```bash
 git clone https://github.com/yourname/isc.git
 cd isc
-npx serve .
-# Open http://localhost:8080 in two browser tabs
+npm install
+npx turbo run build
+
+# Start the browser UI:
+npm run dev --workspace=@isc/browser
+# Open http://localhost:5173 in two browser tabs
+
+# Start a headless supernode:
+npm run start --workspace=@isc/node
+
+# Simulate a 10-peer swarm test:
+bash scripts/swarm_test.sh 10
 ```
 
 See [PROTOCOL.md](PROTOCOL.md) for complete protocol specification.
