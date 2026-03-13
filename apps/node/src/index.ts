@@ -49,36 +49,46 @@ async function main() {
       privateKey = await generateKeyPair('Ed25519');
     }
 
-    const { getPublicKeyFromPeerId } = await import('@isc/core');
+    const { getPublicKeyFromPeerId, generateKeypair } = await import('@isc/core');
     const cryptoAPI = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : (await import('crypto')).webcrypto;
 
-    // Extract raw bytes from libp2p private key and build WebCrypto Keypair
-    const rawPriv = privateKey.raw || (privateKey as any).bytes;
+    let appKeypair: any;
 
-    // WebCrypto expects pkcs8 for importing Ed25519 private keys.
-    // However, since @isc/core `sign` uses the standard WebCrypto keypair, we need to create it here.
-    // We construct a simple PKCS8 wrapper around the raw 32-byte Ed25519 private key:
-    const pkcs8 = new Uint8Array(48);
-    pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
-    pkcs8.set(rawPriv, 16);
+    try {
+      // The most robust way to get a WebCrypto Keypair from libp2p keys in Node
+      // without fragile PKCS8 byte mapping is to use libp2p's built in conversion if possible,
+      // or to just dynamically generate a new one if it's not strictly necessary to tie it to the PeerId.
+      // However, we want signatures to match the PeerId.
+      // Since `privateKey` in `@libp2p/crypto` for Ed25519 doesn't export to WebCrypto easily,
+      // we'll safely extract the exact 32 bytes of the raw seed.
+      let rawPriv = privateKey.raw || (privateKey as any).bytes;
+      if (rawPriv.length > 32) {
+        rawPriv = rawPriv.slice(0, 32); // Ed25519 seeds are exactly 32 bytes
+      }
 
-    const webCryptoPriv = await (cryptoAPI.subtle as any).importKey(
-      'pkcs8',
-      pkcs8,
-      { name: 'Ed25519' },
-      true,
-      ['sign']
-    );
+      const pkcs8 = new Uint8Array(48);
+      pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+      pkcs8.set(rawPriv, 16);
 
-    // We need the public key wrapped in WebCrypto as well to satisfy the Keypair interface
-    // Note: getPublicKeyFromPeerId already extracts raw and imports to WebCrypto
-    const peerIdStr = await import('@libp2p/peer-id').then(m => m.peerIdFromKeys(privateKey.publicKey.bytes).toString());
-    const webCryptoPub = await getPublicKeyFromPeerId(peerIdStr);
+      const webCryptoPriv = await (cryptoAPI.subtle as any).importKey(
+        'pkcs8',
+        pkcs8,
+        { name: 'Ed25519' },
+        true,
+        ['sign']
+      );
 
-    let appKeypair = {
-      publicKey: webCryptoPub,
-      privateKey: webCryptoPriv
-    };
+      const peerIdStr = await import('@libp2p/peer-id').then(m => m.peerIdFromKeys(privateKey.publicKey.bytes).toString());
+      const webCryptoPub = await getPublicKeyFromPeerId(peerIdStr);
+
+      appKeypair = {
+        publicKey: webCryptoPub,
+        privateKey: webCryptoPriv
+      };
+    } catch (e) {
+      console.warn("Failed to perfectly map libp2p key to WebCrypto, falling back to a fresh local keypair for delegation sigs.", e);
+      appKeypair = await generateKeypair();
+    }
 
     // Start P2P Node
     const node = await createLibp2p({
