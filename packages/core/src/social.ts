@@ -1,6 +1,55 @@
-import { Keypair, sign, encodePayload, verify } from './crypto.js';
-import { cosineSimilarity, lshHash } from './math.js';
+import { Keypair, sign, encodePayload, verify, encryptForPeer, decryptFromPeer, exportPrivateKeyBytes } from './crypto.js';
+import { cosineSimilarity, lshHash, meanVector } from './math.js';
 import { Distribution } from './semantic.js';
+
+export interface ChannelSummary {
+  channelID: string;
+  name: string;
+  description: string;
+  embedding: number[];
+  postCount: number;
+  latestEmbedding: number[];
+}
+
+export interface Profile {
+  peerID: string;
+  bio?: string;
+  bioEmbedding?: number[];  // Computed: mean(channelEmbeddings)
+  channels: ChannelSummary[];
+  followerCount: number;
+  followingCount: number;
+  joinedAt: number;
+}
+
+export interface SignedProfile extends Profile {
+  signature: Uint8Array;
+}
+
+export interface DirectMessage {
+  type: 'dm';
+  sender: string;
+  recipient: string;
+  timestamp: number;
+  signature: Uint8Array;
+  encrypted: Uint8Array;  // E2E encrypted payload
+}
+
+export interface DecryptedDirectMessage {
+  type: 'dm';
+  sender: string;
+  recipient: string;
+  content: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
+
+export interface FollowEvent {
+  type: 'follow' | 'unfollow';
+  follower: string;
+  followee: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
 
 export interface SignedPost {
   type: 'post';
@@ -166,4 +215,86 @@ export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promis
   };
   const encoded = encodePayload(payload);
   return await verify(encoded, post.signature, publicKey);
+}
+
+/**
+ * Creates and encrypts a Direct Message for a specific recipient.
+ */
+export async function createDirectMessage(
+  keypair: Keypair,
+  senderPeerID: string,
+  recipientPeerID: string,
+  recipientPublicKeyBytes: Uint8Array,
+  content: string
+): Promise<DirectMessage> {
+  const senderPrivBytes = await exportPrivateKeyBytes(keypair.privateKey);
+  const payloadBytes = new TextEncoder().encode(content);
+
+  const encrypted = await encryptForPeer(payloadBytes, senderPrivBytes, recipientPublicKeyBytes);
+
+  const dm: DirectMessage = {
+    type: 'dm',
+    sender: senderPeerID,
+    recipient: recipientPeerID,
+    timestamp: Date.now(),
+    encrypted,
+    signature: new Uint8Array(0) // placeholder
+  };
+
+  const payloadToSign = {
+    type: dm.type,
+    sender: dm.sender,
+    recipient: dm.recipient,
+    timestamp: dm.timestamp,
+    encrypted: Array.from(dm.encrypted) // Ensure array for stable stringify
+  };
+
+  dm.signature = await sign(encodePayload(payloadToSign), keypair);
+  return dm;
+}
+
+/**
+ * Decrypts a Direct Message from a sender.
+ */
+export async function decryptDirectMessage(
+  dm: DirectMessage,
+  recipientKeypair: Keypair,
+  senderPublicKeyBytes: Uint8Array,
+  senderPublicKey: CryptoKey // For signature verification
+): Promise<DecryptedDirectMessage> {
+  const payloadToVerify = {
+    type: dm.type,
+    sender: dm.sender,
+    recipient: dm.recipient,
+    timestamp: dm.timestamp,
+    encrypted: Array.from(dm.encrypted)
+  };
+
+  const isValid = await verify(encodePayload(payloadToVerify), dm.signature, senderPublicKey);
+  if (!isValid) {
+    throw new Error('Invalid signature on Direct Message');
+  }
+
+  const recipientPrivBytes = await exportPrivateKeyBytes(recipientKeypair.privateKey);
+  const decryptedBytes = await decryptFromPeer(dm.encrypted, recipientPrivBytes, senderPublicKeyBytes);
+  const content = new TextDecoder().decode(decryptedBytes);
+
+  return {
+    type: 'dm',
+    sender: dm.sender,
+    recipient: dm.recipient,
+    content,
+    timestamp: dm.timestamp,
+    signature: dm.signature
+  };
+}
+
+/**
+ * Computes the mean bio embedding from a profile's channels.
+ */
+export function computeBioEmbedding(profile: Profile): number[] {
+  if (profile.channels.length === 0) return [];
+  const embeddings = profile.channels.map(c => c.latestEmbedding).filter(e => e.length > 0);
+  if (embeddings.length === 0) return [];
+  return meanVector(embeddings);
 }

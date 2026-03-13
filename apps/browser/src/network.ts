@@ -53,6 +53,9 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
   await node.start();
   console.log('libp2p node started with peerId:', node.peerId.toString());
 
+  // Note: Most protocol handlers are now registered directly on appState.p2pNode inside main.ts.
+  // The ones below are legacy from early Phase 1.
+
   // Register Protocol Handlers
   node.handle(PROTOCOL_CHAT, (data: any) => {
     if (onChat) {

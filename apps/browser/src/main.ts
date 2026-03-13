@@ -1,12 +1,12 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature, wordHashFallbackEmbed } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature, wordHashFallbackEmbed, createDirectMessage, decryptDirectMessage, getRawPublicKeyFromPeerId, Profile, computeBioEmbedding, FollowEvent } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { registerSW } from 'virtual:pwa-register';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_REPLY, handleIncomingReply, sendReplyMessage, PROTOCOL_QUOTE, handleIncomingQuote, sendQuoteMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage } from '@isc/protocol';
-import { createSignedReaction } from '@isc/core';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_REPLY, handleIncomingReply, sendReplyMessage, PROTOCOL_QUOTE, handleIncomingQuote, sendQuoteMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage, PROTOCOL_DM, handleIncomingDM, sendDMMessage } from '@isc/protocol';
+import { createSignedReaction, sign, encodePayload } from '@isc/core';
 
 export interface SavedChannel extends Channel {
   distributions?: Distribution[];
@@ -336,6 +336,75 @@ async function initISC() {
         }
       }
     );
+
+    appState.p2pNode.handle(PROTOCOL_DM, (data: any) => {
+      handleIncomingDM(data.stream, async (msg) => {
+        const remotePeer = data.connection.remotePeer.toString();
+        console.log(`Received encrypted DM from ${remotePeer}`);
+
+        recordPeerEncounter(remotePeer);
+
+        try {
+           if (!appState.keypair) return;
+           const senderPubKey = await getPublicKeyFromPeerId(msg.sender);
+           const senderRawPubKey = await getRawPublicKeyFromPeerId(msg.sender);
+
+           const decrypted = await decryptDirectMessage(msg, appState.keypair, senderRawPubKey, senderPubKey);
+
+           // Use the cryptographically verified sender ID, not just the connection remote peer
+           const authenticatedSender = decrypted.sender;
+
+           if (!appState.activeChats[authenticatedSender]) {
+             appState.activeChats[authenticatedSender] = [];
+           }
+
+           appState.activeChats[authenticatedSender].push({
+             sender: 'peer',
+             text: decrypted.content,
+             timestamp: decrypted.timestamp
+           });
+
+           recordInteraction(authenticatedSender, 'chat', true);
+
+           if (appState.currentChatPeerId === authenticatedSender) {
+             renderChatPanel();
+           } else {
+              // Notify logic
+              renderChannels();
+           }
+        } catch (e) {
+           console.error("Failed to decrypt or verify incoming DM", e);
+        }
+      });
+    });
+
+    // Fallback for Phase 1 unencrypted Protocol compatibility
+    appState.p2pNode.handle(PROTOCOL_CHAT, (data: any) => {
+      handleIncomingChat(data.stream, (msg) => {
+        const remotePeer = data.connection.remotePeer.toString();
+        console.log(`Received cleartext chat from ${remotePeer}:`, msg);
+
+        recordPeerEncounter(remotePeer);
+
+        if (!appState.activeChats[remotePeer]) {
+          appState.activeChats[remotePeer] = [];
+        }
+
+        appState.activeChats[remotePeer].push({
+          sender: 'peer',
+          text: msg.msg,
+          timestamp: Date.now()
+        });
+
+        recordInteraction(remotePeer, 'chat', true);
+
+        if (appState.currentChatPeerId === remotePeer) {
+          renderChatPanel();
+        } else {
+           renderChannels();
+        }
+      });
+    });
 
     appState.p2pNode.handle(PROTOCOL_POST, (data: any) => {
       handleIncomingPost(data.stream, async (post) => {
@@ -678,15 +747,32 @@ async function sendActiveChatMessage() {
   }
 
   try {
-    if (appState.p2pNode) {
-      console.log(`Sending message to ${peerId}: ${text}`);
+    if (appState.p2pNode && appState.keypair) {
+      console.log(`Sending secure DM to ${peerId}`);
       try {
-        // Attempt dialing direct multiaddrs or rely on relay
-        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
-        await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
-        console.log('Message sent successfully!');
+        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_DM);
+        const recipientRawPubKey = await getRawPublicKeyFromPeerId(peerId);
+
+        const dm = await createDirectMessage(
+          appState.keypair,
+          appState.p2pNode.peerId.toString(),
+          peerId,
+          recipientRawPubKey,
+          text
+        );
+
+        await sendDMMessage(stream, dm);
+        console.log('Encrypted DM sent successfully!');
       } catch (dialErr) {
-        console.error(`Dialing peer ${peerId} failed, this is expected in browser-only sim without proper STUN/TURN setups:`, dialErr);
+        console.log(`Dialing peer ${peerId} for secure DM failed, falling back to cleartext chat.`, dialErr);
+
+        try {
+          const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
+          await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
+          console.log('Cleartext fallback message sent successfully!');
+        } catch (fallbackErr) {
+          console.error(`Fallback dialing peer ${peerId} failed:`, fallbackErr);
+        }
       }
     }
   } catch (err) {
@@ -873,6 +959,8 @@ export function renderRecentPosts() {
     followBtn.textContent = appState.followedPeers.includes(post.author) ? 'Unfollow' : 'Follow';
     followBtn.addEventListener('click', async () => {
       const currentlyFollowing = appState.followedPeers.includes(post.author);
+      const actionType = currentlyFollowing ? 'unfollow' : 'follow';
+
       if (currentlyFollowing) {
         appState.followedPeers = appState.followedPeers.filter(p => p !== post.author);
         followBtn.textContent = 'Follow';
@@ -881,6 +969,30 @@ export function renderRecentPosts() {
         followBtn.textContent = 'Unfollow';
       }
       await saveFollowedPeers();
+
+      // Announce over pubsub
+      if (appState.p2pNode && appState.keypair) {
+        try {
+          const peerId = appState.p2pNode.peerId.toString();
+          const event: FollowEvent = {
+            type: actionType,
+            follower: peerId,
+            followee: post.author,
+            timestamp: Date.now(),
+            signature: new Uint8Array(0) // placeholder
+          };
+          const encoded = encodePayload(event);
+          event.signature = await sign(encoded, appState.keypair);
+
+          const topic = `/isc/follow/${post.author}`;
+          const encoder = new TextEncoder();
+          await appState.p2pNode.services.pubsub.publish(topic, encoder.encode(JSON.stringify(event)));
+          console.log(`Published ${actionType} event to ${post.author}`);
+        } catch (e) {
+          console.warn(`Failed to publish follow event`, e);
+        }
+      }
+
       // Only re-render completely if we are actively in the following feed and just unfollowed someone
       // otherwise just let the button update its state
       if (appState.activeFeed === 'following' && currentlyFollowing) {
@@ -1125,6 +1237,146 @@ export function renderRecentPosts() {
   }
 }
 
+export async function fetchAndRenderProfile(peerId: string) {
+  const titleEl = document.getElementById('profile-view-title');
+  const peerIdEl = document.getElementById('profile-view-peer-id');
+  const bioEl = document.getElementById('profile-view-bio');
+  const followersEl = document.getElementById('profile-view-followers');
+  const followingEl = document.getElementById('profile-view-following');
+
+  // Currently we do not dynamically query follower count over DHT in phase 1, but we reset it to 0
+  if (followersEl) followersEl.textContent = '0';
+  if (followingEl) followingEl.textContent = '0';
+  const joinedEl = document.getElementById('profile-view-joined');
+  const channelListEl = document.getElementById('profile-view-channel-list');
+  const channelCountEl = document.getElementById('profile-view-channel-count');
+
+  if (!peerIdEl || !bioEl || !channelListEl || !channelCountEl) return;
+
+  const isSelf = appState.p2pNode && appState.p2pNode.peerId.toString() === peerId;
+
+  if (titleEl) {
+    titleEl.textContent = isSelf ? 'Your Profile' : 'Peer Profile';
+  }
+
+  peerIdEl.textContent = peerId;
+  bioEl.textContent = 'Fetching semantic profile...';
+  channelListEl.innerHTML = '';
+  channelCountEl.textContent = '0';
+
+  // Set joined date based on when we first saw them
+  if (joinedEl) {
+    const creationDate = appState.peerCreationDates[peerId];
+    if (creationDate) {
+      joinedEl.textContent = `Joined: ${new Date(creationDate).toLocaleDateString()}`;
+    } else {
+      joinedEl.textContent = `Joined: Unknown`;
+    }
+  }
+
+  // Switch to the profile view
+  window.switchView('profile');
+
+  // Load user profile logic
+  const profile: Profile = {
+    peerID: peerId,
+    channels: [],
+    followerCount: 0,
+    followingCount: 0,
+    joinedAt: appState.peerCreationDates[peerId] || Date.now()
+  };
+
+  if (isSelf) {
+    // Populate with own channels
+    profile.channels = appState.channels.map(ch => {
+      // Create a simplified embedding for the bio
+      const embedding = ch.distributions && ch.distributions.length > 0
+        ? ch.distributions[0].mu
+        : [];
+      return {
+        channelID: ch.id,
+        name: ch.name,
+        description: ch.description,
+        embedding: embedding,
+        postCount: 0, // Placeholder
+        latestEmbedding: embedding
+      };
+    });
+  } else {
+    // Try to query their channels from the DHT
+    try {
+      if (appState.p2pNode) {
+        const keyString = `/isc/profile/channels/${peerId}`;
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        for await (const event of appState.p2pNode.services.dht.get(encoder.encode(keyString))) {
+           if (event.name === 'VALUE') {
+             try {
+                const str = decoder.decode(event.value);
+                const channels = JSON.parse(str);
+                if (Array.isArray(channels)) {
+                  profile.channels = channels;
+                }
+             } catch (e) {
+                console.warn('Failed to parse peer profile channels');
+             }
+           }
+        }
+      }
+    } catch (e) {
+      console.warn("Could not fetch peer profile from DHT");
+    }
+  }
+
+  // Compute bio summary
+  profile.bioEmbedding = computeBioEmbedding(profile);
+
+  // Update UI with the loaded profile
+  if (profile.channels.length > 0) {
+     bioEl.textContent = `Aggregated semantic footprint based on ${profile.channels.length} contexts.`;
+     channelCountEl.textContent = profile.channels.length.toString();
+
+     profile.channels.forEach(ch => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.style.padding = '0.75rem';
+
+        const h4 = document.createElement('h4');
+        h4.style.margin = '0 0 0.25rem 0';
+        h4.textContent = `# ${ch.name}`;
+
+        const desc = document.createElement('p');
+        desc.className = 'text-sm';
+        desc.style.color = 'var(--text-secondary)';
+        desc.style.margin = '0';
+        desc.textContent = ch.description;
+
+        div.appendChild(h4);
+        div.appendChild(desc);
+        channelListEl.appendChild(div);
+     });
+
+     // Just to demonstrate how we would compute similarity, we calculate similarity to our own active channel
+     if (!isSelf && appState.activeChannelId) {
+        const activeCh = appState.channels.find(c => c.id === appState.activeChannelId);
+        if (activeCh && activeCh.distributions && activeCh.distributions.length > 0 && profile.bioEmbedding.length > 0) {
+           const sim = checkPostCoherence({ embedding: profile.bioEmbedding } as any, activeCh.distributions);
+           const simEl = document.createElement('p');
+           simEl.className = 'text-sm';
+           simEl.style.color = 'var(--accent-primary)';
+           simEl.style.marginTop = '0.5rem';
+           simEl.textContent = `Overall similarity to your active channel: ${(sim * 100).toFixed(1)}%`;
+           bioEl.appendChild(simEl);
+        }
+     }
+
+  } else {
+     bioEl.textContent = 'No aggregated channel distribution available.';
+     channelListEl.innerHTML = '<p class="text-sm" style="color: var(--text-secondary);">No channels found for this peer.</p>';
+  }
+}
+
 export function renderDiscoverTab() {
   const container = document.getElementById('discover-trending-cards');
   const searchInput = document.getElementById('discover-search-input') as HTMLInputElement;
@@ -1201,9 +1453,25 @@ export function renderDiscoverTab() {
       window.switchView('chat');
     });
 
+    const profileBtn = document.createElement('button');
+    profileBtn.className = 'btn-icon';
+    profileBtn.textContent = '👤 Profile';
+    profileBtn.style.marginLeft = '0.5rem';
+    profileBtn.style.fontSize = 'var(--font-size-xs)';
+    profileBtn.addEventListener('click', () => {
+       fetchAndRenderProfile(peerId);
+    });
+
     card.appendChild(header);
     card.appendChild(p);
-    card.appendChild(btn);
+
+    const actionsDiv = document.createElement('div');
+    actionsDiv.style.display = 'flex';
+    actionsDiv.style.alignItems = 'center';
+    actionsDiv.appendChild(btn);
+    actionsDiv.appendChild(profileBtn);
+
+    card.appendChild(actionsDiv);
 
     container.appendChild(card);
   });
@@ -1399,10 +1667,26 @@ export function renderChannels() {
               openChatPanel();
             });
 
+            const profileBtn = document.createElement('button');
+            profileBtn.className = 'btn-icon';
+            profileBtn.textContent = '👤 Profile';
+            profileBtn.style.marginLeft = '0.5rem';
+            profileBtn.style.fontSize = 'var(--font-size-xs)';
+            profileBtn.addEventListener('click', () => {
+               fetchAndRenderProfile(peerId);
+            });
+
             card.appendChild(header);
             card.appendChild(p);
             card.appendChild(metaDiv);
-            card.appendChild(btn);
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.style.display = 'flex';
+            actionsDiv.style.alignItems = 'center';
+            actionsDiv.appendChild(btn);
+            actionsDiv.appendChild(profileBtn);
+
+            card.appendChild(actionsDiv);
 
             if (simScore >= 0.85) {
               matchesVeryClose.appendChild(card);
@@ -1828,6 +2112,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initialize the ISC core modules
   initISC().then(() => {
+    // Setup follow/unfollow pubsub handler
+    if (appState.p2pNode) {
+      const topic = `/isc/follow/${appState.p2pNode.peerId.toString()}`;
+      appState.p2pNode.services.pubsub.subscribe(topic);
+      appState.p2pNode.services.pubsub.addEventListener('message', async (message: any) => {
+        if (message.detail.topic !== topic) return;
+        try {
+          const decoder = new TextDecoder();
+          const str = decoder.decode(message.detail.data);
+          const event: FollowEvent = JSON.parse(str);
+
+          const remoteKey = await getPublicKeyFromPeerId(event.follower);
+          if (await verifySignature(event, remoteKey)) {
+             console.log(`Received ${event.type} event from ${event.follower}`);
+             // We could store followers here if we wanted to show follower lists
+             // For now, this just proves the pubsub connection is working
+          }
+        } catch(e) {
+          console.error("Failed to process follow event via pubsub", e);
+        }
+      });
+    }
+
     renderChannels();
 
     // Periodically fetch posts for the active channel's "For You" feed
@@ -1937,6 +2244,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-show-compose')?.addEventListener('click', () => switchView('compose'));
   document.getElementById('btn-show-settings')?.addEventListener('click', () => switchView('settings'));
   document.getElementById('btn-show-test')?.addEventListener('click', () => switchView('test'));
+  document.getElementById('btn-show-profile')?.addEventListener('click', () => {
+     if (appState.p2pNode) {
+        fetchAndRenderProfile(appState.p2pNode.peerId.toString());
+     }
+  });
 
 });
 
