@@ -30,10 +30,10 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 - [ ] Playwright E2E suite for flows (channel create, match, chat init)
 
 ### 3. Bring Social Layer Parity
-- [ ] Posts (280 char + optional IPFS link)
-- [ ] Semantic "For You" feed via ANN
-- [ ] Likes/reposts/replies/quotes (implement fused-vector quoting)
-- [ ] Simple profiles (mean vector)
+- [x] Posts (280 char + optional IPFS link)
+- [x] Semantic "For You" feed via ANN
+- [x] Likes/reposts/replies/quotes (implement fused-vector quoting)
+- [x] Simple profiles (mean vector)
 
 ### 4. Final Hardening
 - [ ] Run internal swarms (50+ virtual peers)

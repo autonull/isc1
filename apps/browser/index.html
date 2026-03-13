@@ -62,7 +62,8 @@
             <p style="padding: 2rem; color: var(--text-secondary); text-align: center;">No recent posts from peers yet.</p>
           </div>
           <div class="chat-input-area inline-compose">
-             <input type="text" id="compose-post-input" placeholder="Type a new post..." />
+             <input type="text" id="compose-post-input" placeholder="Type a new post (max 280 chars)..." maxlength="280" />
+             <input type="text" id="compose-post-ipfs" placeholder="IPFS Link (optional)" style="flex: 0.3;" />
              <button id="btn-publish-post-inline" class="btn-primary">Post</button>
           </div>
         </section>

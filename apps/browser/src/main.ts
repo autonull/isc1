@@ -1054,6 +1054,20 @@ export function renderRecentPosts() {
     content.className = 'match-desc';
     content.textContent = post.content;
 
+    if (post.ipfsLink) {
+      const ipfsEl = document.createElement('div');
+      ipfsEl.style.marginTop = '0.5rem';
+      ipfsEl.style.fontSize = 'var(--font-size-sm)';
+      const linkEl = document.createElement('a');
+      linkEl.href = post.ipfsLink;
+      linkEl.target = '_blank';
+      linkEl.rel = 'noopener noreferrer';
+      linkEl.textContent = '📎 IPFS Link';
+      linkEl.style.color = 'var(--primary)';
+      ipfsEl.appendChild(linkEl);
+      content.appendChild(ipfsEl);
+    }
+
     // Add reaction bar
     const reactionBar = document.createElement('div');
     reactionBar.style.display = 'flex';
@@ -2174,6 +2188,7 @@ function setupCompose() {
 
   const btnPostInline = document.getElementById('btn-publish-post-inline');
   const inputPostInline = document.getElementById('compose-post-input') as HTMLInputElement;
+  const inputPostIpfs = document.getElementById('compose-post-ipfs') as HTMLInputElement;
 
   if (btnPostInline && inputPostInline) {
     btnPostInline.addEventListener('click', async () => {
@@ -2182,8 +2197,14 @@ function setupCompose() {
         return;
       }
       const desc = inputPostInline.value.trim();
+      const ipfsLink = inputPostIpfs ? inputPostIpfs.value.trim() : '';
 
       if (!desc) {
+        return;
+      }
+
+      if (desc.length > 280) {
+        alert("Post exceeds the 280-character limit.");
         return;
       }
 
@@ -2195,7 +2216,17 @@ function setupCompose() {
         const embedding = await embedFn(desc);
 
         const peerId = appState.p2pNode.peerId.toString();
-        const post = await createSignedPost(appState.keypair!, peerId, desc, 'temp-id', embedding);
+        const post = await createSignedPost(
+          appState.keypair!,
+          peerId,
+          desc,
+          'temp-id',
+          embedding,
+          86400000,
+          undefined,
+          undefined,
+          ipfsLink || undefined
+        );
 
         const isOffline = !navigator.onLine;
         post.isPending = isOffline;
@@ -2206,6 +2237,7 @@ function setupCompose() {
 
         // Reset form immediately for optimistic feel
         inputPostInline.value = '';
+        if (inputPostIpfs) inputPostIpfs.value = '';
 
         if (isOffline) {
           await enqueueOfflineAction({ type: 'post', post });

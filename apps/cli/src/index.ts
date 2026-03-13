@@ -356,7 +356,13 @@ postCmd
   .description('Embed and broadcast a post to connected peers')
   .argument('<content>', 'Post content')
   .argument('<channelID>', 'Associated channel ID')
-  .action(async (content: string, channelID: string) => {
+  .option('--ipfs-link <url>', 'Optional IPFS link for media attachments')
+  .action(async (content: string, channelID: string, options: { ipfsLink?: string }) => {
+    if (content.length > 280) {
+      console.error('Error: Post content exceeds the 280 character limit.');
+      process.exit(1);
+    }
+
     // 1. Enforce Rate Limit
     const rlState = await nodeStorage.get<any>('isc:ratelimits');
     const limiter = new RateLimiter();
@@ -386,7 +392,7 @@ postCmd
     const node = await initCliNode();
     const peerId = node.peerId.toString();
 
-    const post = await createSignedPost(keypair, peerId, content, channelID, embedding);
+    const post = await createSignedPost(keypair, peerId, content, channelID, embedding, 86400000, undefined, undefined, options.ipfsLink);
 
     const connections = node.getConnections();
     if (connections.length === 0) {
