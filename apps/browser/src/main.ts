@@ -38,6 +38,7 @@ export const appState: {
   supernodeHealth: { [peerId: string]: any };
   activeFeed: 'for-you' | 'following';
   followedPeers: string[];
+  peerCreationDates: { [peerId: string]: number };
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -55,8 +56,16 @@ export const appState: {
   rateLimiter: new RateLimiter(),
   supernodeHealth: {},
   activeFeed: 'for-you',
-  followedPeers: []
+  followedPeers: [],
+  peerCreationDates: {}
 };
+
+async function recordPeerEncounter(peerId: string) {
+  if (!appState.peerCreationDates[peerId]) {
+    appState.peerCreationDates[peerId] = Date.now();
+    await browserStorage.set('isc:peer_creation_dates', appState.peerCreationDates);
+  }
+}
 
 async function loadSavedData() {
   try {
@@ -75,6 +84,11 @@ async function loadSavedData() {
     const savedReputation = await browserStorage.get<{ [peerId: string]: Interaction[] }>('isc:reputation');
     if (savedReputation) {
       appState.reputation = savedReputation;
+    }
+
+    const savedCreationDates = await browserStorage.get<{ [peerId: string]: number }>('isc:peer_creation_dates');
+    if (savedCreationDates) {
+      appState.peerCreationDates = savedCreationDates;
     }
 
     const savedQueue = await browserStorage.get<any[]>('isc:offline_queue');
@@ -242,6 +256,9 @@ async function initISC() {
         // Actually, initNode expects (chatMsg) => void, but wait, let's look at initNode implementation
         console.log('Incoming chat stream received');
         const remotePeerId = data.connection?.remotePeer?.toString() || 'UnknownPeer';
+        if (remotePeerId !== 'UnknownPeer') {
+          recordPeerEncounter(remotePeerId);
+        }
 
         handleIncomingChat(data.stream, (msg: any) => {
           if (!appState.activeChats[remotePeerId]) {
@@ -264,6 +281,7 @@ async function initISC() {
         });
       },
       (announcement) => {
+        recordPeerEncounter(announcement.peerID);
         const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
         if (announcement.model && announcement.model !== MODEL_ID) {
           console.warn(`Dropped announcement due to model mismatch. Expected ${MODEL_ID}, got ${announcement.model}`);
@@ -283,6 +301,8 @@ async function initISC() {
       },
       async (report) => {
         console.log('Received moderation report:', report);
+
+        recordPeerEncounter(report.reporter);
 
         // Verify the signature
         const { reporter, targetPostID, reason, evidence, signature } = report;
@@ -319,6 +339,7 @@ async function initISC() {
     appState.p2pNode.handle(PROTOCOL_POST, (data: any) => {
       handleIncomingPost(data.stream, (post) => {
         console.log('Received post:', post);
+        recordPeerEncounter(post.author);
         appState.receivedPosts.unshift(post);
         recordInteraction(post.author, 'post_reaction', true);
         renderRecentPosts();
@@ -328,6 +349,7 @@ async function initISC() {
     appState.p2pNode.handle(PROTOCOL_REPLY, (data: any) => {
       handleIncomingReply(data.stream, (reply) => {
         console.log('Received reply:', reply);
+        recordPeerEncounter(reply.author);
         // Add to main feed so it can be replied to itself
         if (!appState.receivedPosts.find(p => p.postID === reply.postID)) {
           appState.receivedPosts.unshift(reply);
@@ -351,6 +373,7 @@ async function initISC() {
     appState.p2pNode.handle(PROTOCOL_QUOTE, (data: any) => {
       handleIncomingQuote(data.stream, (quote) => {
         console.log('Received quote:', quote);
+        recordPeerEncounter(quote.author);
         appState.receivedPosts.unshift(quote);
         renderRecentPosts();
       });
@@ -359,6 +382,8 @@ async function initISC() {
     appState.p2pNode.handle(PROTOCOL_REACTION, (data: any) => {
       handleIncomingReaction(data.stream, (reaction) => {
         console.log('Received reaction:', reaction);
+        recordPeerEncounter(reaction.author);
+        recordInteraction(reaction.author, 'post_reaction', true);
         const post = appState.receivedPosts.find(p => p.postID === reaction.targetPostID);
         if (post) {
           if (reaction.type === 'like') {
@@ -375,6 +400,7 @@ async function initISC() {
 
     appState.p2pNode.handle(PROTOCOL_DELEGATION_HEALTH, (data: any) => {
       handleDelegationHealth(data.stream, (health) => {
+        recordPeerEncounter(health.peerID);
         // Only update if it's newer
         const existing = appState.supernodeHealth[health.peerID];
         if (!existing || existing.timestamp < health.timestamp) {
@@ -1076,7 +1102,7 @@ export function renderDiscoverTab() {
 
     // Calculate and render reputation
     const repHistory = appState.reputation[peerId] || [];
-    const peerCreatedAt = Date.now() - (10 * 24 * 60 * 60 * 1000); // Mock peer creation 10 days ago for UI
+    const peerCreatedAt = appState.peerCreationDates[peerId] || Date.now();
     const repScore = calculateReputation(repHistory, Date.now(), peerCreatedAt);
     const repBadge = document.createElement('span');
     repBadge.style.fontSize = 'var(--font-size-xs)';
@@ -1252,8 +1278,8 @@ export function renderChannels() {
             }
 
             // Reputation weighting
-            // Calculate base reputation using arbitrary past date for peer creation in Phase 1 demo
-            const peerCreatedAt = Date.now() - (10 * 24 * 60 * 60 * 1000);
+            // Calculate base reputation using stored encounter date
+            const peerCreatedAt = appState.peerCreationDates[peerId] || Date.now();
             const repScore = calculateReputation(appState.reputation[peerId] || [], Date.now(), peerCreatedAt);
 
             // Weight the similarity score: heavily penalize very low reputation peers, slight boost for high
