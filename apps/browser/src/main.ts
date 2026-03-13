@@ -86,6 +86,11 @@ async function loadSavedData() {
     if (savedFollowedPeers && Array.isArray(savedFollowedPeers)) {
       appState.followedPeers = savedFollowedPeers;
     }
+
+    const savedRateLimits = await browserStorage.get<any>('isc:ratelimits');
+    if (savedRateLimits) {
+      appState.rateLimiter.loadState(new Map(JSON.parse(savedRateLimits)));
+    }
   } catch (err) {
     console.error('Failed to load saved data:', err);
   }
@@ -1296,9 +1301,13 @@ export function renderChannels() {
             btn.textContent = 'Tap to chat';
             btn.addEventListener('click', () => {
               const myPeerId = appState.p2pNode?.peerId.toString();
-              if (myPeerId && !appState.rateLimiter.attempt(myPeerId, 'chatDial', RATE_LIMITS.CHAT_DIAL)) {
-                alert('Rate limit exceeded for Chat Dial (20/hr). Please try again later.');
-                return;
+              if (myPeerId) {
+                if (!appState.rateLimiter.attempt(myPeerId, 'CHAT_DIAL', RATE_LIMITS.CHAT_DIAL)) {
+                  alert('Rate limit exceeded for Chat Dial (20/hr). Please try again later.');
+                  return;
+                }
+                const stateToSave = JSON.stringify(Array.from(appState.rateLimiter.getState().entries()));
+                browserStorage.set('isc:ratelimits', stateToSave).catch(e => console.error(e));
               }
 
               appState.currentChatPeerId = peerId;
@@ -1499,10 +1508,12 @@ export async function announceAndDiscover(channel: SavedChannel) {
   if (!appState.p2pNode || !channel.distributions || channel.distributions.length === 0) return;
 
   const peerIdStr = appState.p2pNode.peerId.toString();
-  if (!appState.rateLimiter.attempt(peerIdStr, 'announce', RATE_LIMITS.ANNOUNCE)) {
+  if (!appState.rateLimiter.attempt(peerIdStr, 'ANNOUNCE', RATE_LIMITS.ANNOUNCE)) {
     console.warn('Rate limit exceeded for DHT Announce (5/min).');
     return;
   }
+  const stateToSave = JSON.stringify(Array.from(appState.rateLimiter.getState().entries()));
+  browserStorage.set('isc:ratelimits', stateToSave).catch(e => console.error(e));
 
   const rootDist = channel.distributions.find((d: any) => d.type === 'root');
   if (!rootDist) return;
@@ -1766,6 +1777,13 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchForYouFeed();
       }
     }, 10000);
+
+    // Periodically clean up rate limiter memory and persist state
+    setInterval(() => {
+      appState.rateLimiter.cleanup();
+      const stateToSave = JSON.stringify(Array.from(appState.rateLimiter.getState().entries()));
+      browserStorage.set('isc:ratelimits', stateToSave).catch(e => console.error(e));
+    }, 60 * 1000);
   });
 
   setupCompose();
