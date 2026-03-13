@@ -1,5 +1,5 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature, wordHashFallbackEmbed } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -1450,11 +1450,8 @@ function getEmbeddingHelper() {
         const result = await browserModel.embed(text);
         return result;
       } catch (e: any) {
-        console.error('Browser model embedding failed, falling back:', e);
-        // Provide mock embeddings if model fails to load properly in test environment
-        const vec = new Array(384).fill(0).map((_, i) => Math.sin(text.length * i));
-        const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-        return vec.map(v => v / (norm || 1));
+        console.error('Browser model embedding failed, falling back to word-hash:', e);
+        return wordHashFallbackEmbed(text);
       }
     } else {
       // Use delegation

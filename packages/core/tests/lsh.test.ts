@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { lshHash, cosineSimilarity } from '../src/math';
-import { mockEmbed } from '../src/semantic';
+import { wordHashFallbackEmbed } from '../src/semantic';
 
 describe('lshHash', () => {
   it('is deterministic for same vector and seed', async () => {
-    const vec = await mockEmbed("hello world");
+    const vec = await wordHashFallbackEmbed("hello world");
     const hashes1 = lshHash(vec, "seed123", 5);
     const hashes2 = lshHash(vec, "seed123", 5);
 
@@ -12,7 +12,7 @@ describe('lshHash', () => {
   });
 
   it('provides semantic space isolation (different seeds yield different hashes)', async () => {
-    const vec = await mockEmbed("hello world");
+    const vec = await wordHashFallbackEmbed("hello world");
     const hashes1 = lshHash(vec, "modelHashA", 5);
     const hashes2 = lshHash(vec, "modelHashB", 5);
 
@@ -20,7 +20,7 @@ describe('lshHash', () => {
   });
 
   it('outputs exactly 32 chars per hash by default', async () => {
-    const vec = await mockEmbed("test string");
+    const vec = await wordHashFallbackEmbed("test string");
     const hashes = lshHash(vec, "seed", 1);
 
     expect(hashes[0]).toHaveLength(32);
@@ -28,7 +28,7 @@ describe('lshHash', () => {
   });
 
   it('generates the specified number of unique hashes', async () => {
-    const vec = await mockEmbed("another string");
+    const vec = await wordHashFallbackEmbed("another string");
     const hashes = lshHash(vec, "seed", 20);
 
     expect(hashes).toHaveLength(20);
@@ -37,8 +37,8 @@ describe('lshHash', () => {
   });
 
   it('preserves bucket proximity for similar vectors', async () => {
-    const vecA = await mockEmbed("distributed systems");
-    const vecB = await mockEmbed("distributed systems and consensus");
+    const vecA = await wordHashFallbackEmbed("distributed systems");
+    const vecB = await wordHashFallbackEmbed("distributed systems and consensus");
 
     // Create somewhat similar vectors
     const vecC = vecA.map((v, i) => v * 0.9 + vecB[i] * 0.1);
@@ -63,8 +63,8 @@ describe('lshHash', () => {
   });
 
   it('has low collision rate for dissimilar vectors', async () => {
-    const vecA = await mockEmbed("distributed systems");
-    const vecB = await mockEmbed("baking sourdough bread");
+    const vecA = await wordHashFallbackEmbed("distributed systems");
+    const vecB = await wordHashFallbackEmbed("baking sourdough bread");
 
     const hashesA = lshHash(vecA, "seed", 20);
     const hashesB = lshHash(vecB, "seed", 20);
