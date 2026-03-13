@@ -1,3 +1,6 @@
+import { publicKeyFromProtobuf } from '@libp2p/crypto/keys';
+import { peerIdFromString } from '@libp2p/peer-id';
+
 export interface Keypair {
   publicKey: CryptoKey;
   privateKey: CryptoKey;
@@ -5,6 +8,38 @@ export interface Keypair {
 
 export type Signature = Uint8Array;
 export type PublicKey = CryptoKey;
+
+/**
+ * Extracts a Web Crypto PublicKey from a libp2p PeerID string.
+ */
+export async function getPublicKeyFromPeerId(peerIdStr: string): Promise<PublicKey> {
+  const peerIdObj = peerIdFromString(peerIdStr);
+  if (!peerIdObj.publicKey) {
+    throw new Error('PeerID does not contain a public key');
+  }
+
+  // peerIdObj.publicKey is already a Uint8Array representing the protobuf wrapper.
+  // The old @libp2p/crypto version took a Uint8Array, the current returns an object that has `.raw`.
+  const libp2pKey = publicKeyFromProtobuf(peerIdObj.publicKey as any);
+  const cryptoAPI = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : (await import('crypto')).webcrypto;
+
+  // Note: Since libp2p uses its own key wrappers, we need to convert it to a Web Crypto API key
+  // The marshal returns protobuf encoded bytes. We can use WebCrypto importKey if it's raw.
+  const rawKeyBytes = libp2pKey.raw || (libp2pKey as any).bytes;
+
+  // If the above doesn't work, we could also use `cryptoAPI.subtle.importKey` with the raw Uint8Array
+  if (!rawKeyBytes) {
+      throw new Error('Failed to extract raw key bytes from libp2p public key');
+  }
+
+  return await (cryptoAPI.subtle as any).importKey(
+    'raw',
+    rawKeyBytes,
+    { name: 'Ed25519' },
+    true,
+    ['verify']
+  );
+}
 
 /**
  * Generates an Ed25519 keypair via the Web Crypto API.

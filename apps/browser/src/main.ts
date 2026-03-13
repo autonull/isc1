@@ -1,5 +1,5 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -312,16 +312,10 @@ async function initISC() {
         recordPeerEncounter(report.reporter);
 
         // Verify the signature
-        const { reporter, targetPostID, reason, evidence, signature } = report;
-        const payloadToVerify = { reporter, targetPostID, reason, evidence };
-        const encoded = encodePayload(payloadToVerify);
-
         let isValid = false;
         try {
-          // Normally we'd fetch the CryptoKey from the DHT or peerId.
-          // For phase 2 simulation without full libp2p custom crypto hooks, we mock validation if the signature exists, but structure it to enforce validation checks.
-          isValid = !!signature;
-          if (!encoded || !verify) throw new Error();
+          const remoteKey = await getPublicKeyFromPeerId(report.reporter);
+          isValid = await verifySignature(report, remoteKey);
         } catch (e) {
           console.error("Failed to verify report signature", e);
         }
@@ -332,19 +326,30 @@ async function initISC() {
         }
 
         // Find the offending post to penalize the author, not the reporter
-        const offendingPost = appState.receivedPosts.find(p => p.postID === targetPostID);
+        const offendingPost = appState.receivedPosts.find(p => p.postID === report.targetPostID);
         if (offendingPost) {
           // Record the flag interaction against the AUTHOR of the off-topic post
           recordInteraction(offendingPost.author, 'flag', false);
-          console.log(`Penalized peer ${offendingPost.author} for post ${targetPostID}`);
+          console.log(`Penalized peer ${offendingPost.author} for post ${report.targetPostID}`);
         } else {
-          console.warn('Received flag for unknown post:', targetPostID);
+          console.warn('Received flag for unknown post:', report.targetPostID);
         }
       }
     );
 
     appState.p2pNode.handle(PROTOCOL_POST, (data: any) => {
-      handleIncomingPost(data.stream, (post) => {
+      handleIncomingPost(data.stream, async (post) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(post.author);
+          if (!await verifySignature(post, remoteKey)) {
+             console.warn("Dropped incoming post due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify post signature", e);
+          return;
+        }
+
         console.log('Received post:', post);
         recordPeerEncounter(post.author);
         appState.receivedPosts.unshift(post);
@@ -354,7 +359,18 @@ async function initISC() {
     });
 
     appState.p2pNode.handle(PROTOCOL_REPLY, (data: any) => {
-      handleIncomingReply(data.stream, (reply) => {
+      handleIncomingReply(data.stream, async (reply) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(reply.author);
+          if (!await verifySignature(reply, remoteKey)) {
+             console.warn("Dropped incoming reply due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify reply signature", e);
+          return;
+        }
+
         console.log('Received reply:', reply);
         recordPeerEncounter(reply.author);
         // Add to main feed so it can be replied to itself
@@ -378,7 +394,18 @@ async function initISC() {
     });
 
     appState.p2pNode.handle(PROTOCOL_QUOTE, (data: any) => {
-      handleIncomingQuote(data.stream, (quote) => {
+      handleIncomingQuote(data.stream, async (quote) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(quote.author);
+          if (!await verifySignature(quote, remoteKey)) {
+             console.warn("Dropped incoming quote due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify quote signature", e);
+          return;
+        }
+
         console.log('Received quote:', quote);
         recordPeerEncounter(quote.author);
         appState.receivedPosts.unshift(quote);
@@ -387,7 +414,18 @@ async function initISC() {
     });
 
     appState.p2pNode.handle(PROTOCOL_REACTION, (data: any) => {
-      handleIncomingReaction(data.stream, (reaction) => {
+      handleIncomingReaction(data.stream, async (reaction) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(reaction.author);
+          if (!await verifySignature(reaction, remoteKey)) {
+             console.warn("Dropped incoming reaction due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify reaction signature", e);
+          return;
+        }
+
         console.log('Received reaction:', reaction);
         recordPeerEncounter(reaction.author);
         recordInteraction(reaction.author, 'post_reaction', true);
@@ -406,7 +444,18 @@ async function initISC() {
     });
 
     appState.p2pNode.handle(PROTOCOL_DELEGATION_HEALTH, (data: any) => {
-      handleDelegationHealth(data.stream, (health) => {
+      handleDelegationHealth(data.stream, async (health) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(health.peerID);
+          if (!await verifySignature(health, remoteKey)) {
+             console.warn("Dropped incoming delegation health due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify delegation health signature", e);
+          return;
+        }
+
         recordPeerEncounter(health.peerID);
         // Only update if it's newer
         const existing = appState.supernodeHealth[health.peerID];
@@ -1451,32 +1500,12 @@ function getEmbeddingHelper() {
 
         console.log('Received delegated embedding, verifying signature...');
 
-        const expectedPayload = encodePayload({
-          requestID: res.requestID,
-          embedding: res.embedding,
-          modelHash: res.modelHash
-        });
-
-        // Parse signature from base64
-        const binaryString = window.atob(res.signature);
-        const signatureBytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          signatureBytes[i] = binaryString.charCodeAt(i);
-        }
-
-        // Ideally we fetch the real public key via libp2p identify or DHT.
-        // For phase 1 simulation, we assume the node bootstrap peer generated this from a known public key buffer or we mock validation to pass if signatures match.
-        // In this implementation, since we don't have the peer's raw `CryptoKey` yet, we'll log it and let it pass for now if we don't have it, but the code structure is correct.
         let isValid = false;
         try {
-          // Attempting to extract public key from peer ID or DHT profile goes here.
-          // const remoteKey = await fetchKey(bootstrapPeerId);
-          // isValid = await verify(expectedPayload, signatureBytes, remoteKey);
-          isValid = true; // Mock true for Phase 1 missing libp2p custom crypto integration
-          // Suppress unused warnings for mock
-          if (!expectedPayload || !verify) throw new Error();
+          const remoteKey = await getPublicKeyFromPeerId(targetPeerId);
+          isValid = await verifySignature(res, remoteKey);
         } catch (verifErr) {
-          console.error(verifErr);
+          console.error("Signature verification failed", verifErr);
         }
 
         if (!isValid) {
