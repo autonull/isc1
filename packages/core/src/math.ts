@@ -25,18 +25,21 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-function seededRng(seed: string): () => number {
+// Mulberry32 PRNG for stable, high-quality pseudo-random numbers
+// Replacing the flawed LCG from PROTOCOL.md with a robust 32-bit generator
+function pseudoRandom(seedStr: string): () => number {
   let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    const char = seed.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
+  for (let i = 0; i < seedStr.length; i++) {
+    hash = Math.imul(31, hash) + seedStr.charCodeAt(i) | 0;
   }
-  let state = Math.abs(hash);
-  return () => {
-    state = (state * 1103515245 + 12345) & 0x7fffffff;
-    return state / 0x7fffffff;
-  };
+
+  let a = hash;
+  return function() {
+    var t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
 }
 
 /**
@@ -44,21 +47,22 @@ function seededRng(seed: string): () => number {
  * Mapped to DHT keys via seeded random-projection LSH.
  */
 export function lshHash(vec: number[], seed: string, numHashes: number = 20, hashLen: number = 32): string[] {
-  const rng = seededRng(seed);
-  const hashes: Set<string> = new Set();
+  const rng = pseudoRandom(seed);
+  const hashes: string[] = [];
 
-  // Keep generating unique hashes until we have numHashes
-  // In a really small space, this could loop forever, so we add a safeguard
-  let attempts = 0;
-  const maxAttempts = numHashes * 10;
-
-  while (hashes.size < numHashes && attempts < maxAttempts) {
+  for (let i = 0; i < numHashes; i++) {
     let hashBits = '';
 
     // Each hash requires hashLen projections
     for (let h = 0; h < hashLen; h++) {
-      // Generate projection vector
-      const proj = Array.from({ length: vec.length }, () => rng() * 2 - 1);
+      // Generate projection vector using Box-Muller transform for spherical symmetry
+      const proj = new Array(vec.length);
+      for (let j = 0; j < vec.length; j++) {
+        let u = 0, v = 0;
+        while (u === 0) u = rng(); // (0, 1) range
+        while (v === 0) v = rng();
+        proj[j] = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+      }
 
       // Project vector onto random hyperplane using dot product
       let dotProduct = 0;
@@ -70,25 +74,8 @@ export function lshHash(vec: number[], seed: string, numHashes: number = 20, has
       hashBits += dotProduct > 0 ? '1' : '0';
     }
 
-    hashes.add(hashBits);
-    attempts++;
+    hashes.push(hashBits);
   }
 
-  // If we couldn't get enough unique hashes, just pad with additional hashes
-  // generated without uniqueness check (this should be extremely rare)
-  const result = Array.from(hashes);
-  while (result.length < numHashes) {
-    let hashBits = '';
-    for (let h = 0; h < hashLen; h++) {
-      const proj = Array.from({ length: vec.length }, () => rng() * 2 - 1);
-      let dotProduct = 0;
-      for (let j = 0; j < vec.length; j++) {
-        dotProduct += vec[j] * proj[j];
-      }
-      hashBits += dotProduct > 0 ? '1' : '0';
-    }
-    result.push(hashBits);
-  }
-
-  return result;
+  return hashes;
 }

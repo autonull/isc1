@@ -66,3 +66,69 @@ export function encodePayload(obj: any): Uint8Array {
   const str = JSON.stringify(obj, Object.keys(obj).sort());
   return new TextEncoder().encode(str);
 }
+
+// Bounded queue to track processed request IDs and prevent memory leaks
+const MAX_REQUEST_IDS = 10000;
+const processedRequestIDs = new Set<string>();
+const requestIDQueue: string[] = [];
+
+/**
+ * Validates the signature of a signed payload object.
+ * Extracts the payload (without the signature), base64-decodes the signature, and verifies.
+ * Also performs basic replay attack prevention via requestID tracking.
+ */
+export async function verifySignature(payloadObj: any, publicKey: PublicKey): Promise<boolean> {
+  if (!payloadObj || !payloadObj.signature) {
+    return false;
+  }
+
+  // Prevent replay attacks using requestID
+  if (payloadObj.requestID) {
+    if (processedRequestIDs.has(payloadObj.requestID)) {
+      return false; // Replay detected
+    }
+  }
+
+  try {
+    // Decode base64 signature
+    const signatureStr = payloadObj.signature;
+    let signatureBytes: Uint8Array;
+
+    if (typeof Buffer !== 'undefined') {
+      // Node.js
+      signatureBytes = new Uint8Array(Buffer.from(signatureStr, 'base64'));
+    } else if (typeof globalThis.atob === 'function') {
+      // Browser / Web Workers
+      const binaryString = globalThis.atob(signatureStr);
+      signatureBytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        signatureBytes[i] = binaryString.charCodeAt(i);
+      }
+    } else {
+      throw new Error("No base64 decoding available in this environment");
+    }
+
+    // Extract the unsigned payload object (copy without signature)
+    const { signature, ...unsignedObj } = payloadObj;
+
+    // Ensure canonical encoding for verification
+    const encodedUnsigned = encodePayload(unsignedObj);
+
+    const isValid = await verify(encodedUnsigned, signatureBytes, publicKey);
+
+    // Only cache requestID on successful verification to prevent cache poisoning DoS
+    if (isValid && payloadObj.requestID) {
+      processedRequestIDs.add(payloadObj.requestID);
+      requestIDQueue.push(payloadObj.requestID);
+      if (requestIDQueue.length > MAX_REQUEST_IDS) {
+        const oldest = requestIDQueue.shift();
+        if (oldest) processedRequestIDs.delete(oldest);
+      }
+    }
+
+    return isValid;
+  } catch (error) {
+    console.warn("Signature verification error:", error);
+    return false;
+  }
+}
