@@ -1055,17 +1055,26 @@ export function renderRecentPosts() {
     content.textContent = post.content;
 
     if (post.ipfsLink) {
-      const ipfsEl = document.createElement('div');
-      ipfsEl.style.marginTop = '0.5rem';
-      ipfsEl.style.fontSize = 'var(--font-size-sm)';
-      const linkEl = document.createElement('a');
-      linkEl.href = post.ipfsLink;
-      linkEl.target = '_blank';
-      linkEl.rel = 'noopener noreferrer';
-      linkEl.textContent = '📎 IPFS Link';
-      linkEl.style.color = 'var(--primary)';
-      ipfsEl.appendChild(linkEl);
-      content.appendChild(ipfsEl);
+      try {
+        const parsedUrl = new URL(post.ipfsLink);
+        const protocol = parsedUrl.protocol.toLowerCase();
+
+        if (protocol === 'http:' || protocol === 'https:' || protocol === 'ipfs:') {
+          const ipfsEl = document.createElement('div');
+          ipfsEl.style.marginTop = '0.5rem';
+          ipfsEl.style.fontSize = 'var(--font-size-sm)';
+          const linkEl = document.createElement('a');
+          linkEl.href = post.ipfsLink;
+          linkEl.target = '_blank';
+          linkEl.rel = 'noopener noreferrer';
+          linkEl.textContent = '📎 IPFS Link';
+          linkEl.style.color = 'var(--primary)';
+          ipfsEl.appendChild(linkEl);
+          content.appendChild(ipfsEl);
+        }
+      } catch (e) {
+        console.warn('Invalid IPFS link URL format:', post.ipfsLink);
+      }
     }
 
     // Add reaction bar
