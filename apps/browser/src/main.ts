@@ -37,6 +37,7 @@ export const appState: {
   rateLimiter: RateLimiter;
   supernodeHealth: { [peerId: string]: any };
   activeFeed: 'for-you' | 'following';
+  semanticMatchMode: 'monte_carlo' | 'analytic';
   followedPeers: string[];
   peerCreationDates: { [peerId: string]: number };
 } = {
@@ -56,6 +57,7 @@ export const appState: {
   rateLimiter: new RateLimiter(),
   supernodeHealth: {},
   activeFeed: 'for-you',
+  semanticMatchMode: 'monte_carlo',
   followedPeers: [],
   peerCreationDates: {}
 };
@@ -104,6 +106,11 @@ async function loadSavedData() {
     const savedRateLimits = await browserStorage.get<any>('isc:ratelimits');
     if (savedRateLimits) {
       appState.rateLimiter.loadState(new Map(JSON.parse(savedRateLimits)));
+    }
+
+    const savedMatchMode = await browserStorage.get<'monte_carlo' | 'analytic'>('isc:settings:matchMode');
+    if (savedMatchMode) {
+      appState.semanticMatchMode = savedMatchMode;
     }
   } catch (err) {
     console.error('Failed to load saved data:', err);
@@ -669,7 +676,7 @@ async function computeTestMatch() {
     const distA = await computeRelationalDistributions(channelA, embedFn, appState.tier);
     const distB = await computeRelationalDistributions(channelB, embedFn, appState.tier);
 
-    const score = relationalMatch(distA, distB, appState.tier as any, 'monte_carlo');
+    const score = relationalMatch(distA, distB, appState.tier as any, appState.semanticMatchMode);
     resultSpan.textContent = score.toFixed(4);
   } catch (err) {
     console.error('Match failed', err);
@@ -1270,7 +1277,7 @@ export function renderChannels() {
                 activeChannel.distributions,
                 peerMockDistributions,
                 appState.tier as any,
-                'analytic'
+                appState.semanticMatchMode
               );
               simScore = simScore * (hashesMatched / 5);
             } else {
@@ -1832,6 +1839,22 @@ document.addEventListener('DOMContentLoaded', () => {
       // We don't dynamically un-handle PROTOCOL_DELEGATE in Phase 1 for simplicity,
       // they'll need to refresh. But we save the intent for the next load.
       console.log(`Delegation allowed set to: ${appState.allowDelegation}. Restart app for changes to take effect.`);
+    });
+  }
+
+  // Match Mode Select UI logic
+  const matchModeSelect = document.getElementById('settings-match-mode') as HTMLSelectElement;
+  if (matchModeSelect) {
+    matchModeSelect.value = appState.semanticMatchMode;
+    matchModeSelect.addEventListener('change', async (e) => {
+      const target = e.target as HTMLSelectElement;
+      appState.semanticMatchMode = target.value as 'monte_carlo' | 'analytic';
+      await browserStorage.set('isc:settings:matchMode', appState.semanticMatchMode);
+      console.log(`Semantic Match Mode set to: ${appState.semanticMatchMode}`);
+      // Re-render matches if we have an active channel
+      if (appState.activeChannelId) {
+         renderChannels();
+      }
     });
   }
 

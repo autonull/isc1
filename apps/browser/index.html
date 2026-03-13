@@ -139,6 +139,17 @@
             </div>
 
             <h3>Device & Network</h3>
+            <div class="card" style="margin-bottom: 1rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <strong>Semantic Match Mode</strong>
+                <select id="settings-match-mode" style="width: auto; margin-bottom: 0;">
+                  <option value="monte_carlo">Monte Carlo</option>
+                  <option value="analytic">Analytic</option>
+                </select>
+              </div>
+              <p class="text-sm" style="color: var(--text-secondary); margin-bottom: 0.5rem;">Controls the algorithm used to compute the similarity of distributions. Analytic is faster, Monte Carlo evaluates spread more precisely.</p>
+            </div>
+
             <div class="card">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                 <strong>Allow Delegation</strong>
