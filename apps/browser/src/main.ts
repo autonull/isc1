@@ -1,11 +1,11 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature, wordHashFallbackEmbed, Profile, computeBioEmbedding, FollowEvent } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature, wordHashFallbackEmbed, createDirectMessage, decryptDirectMessage, getRawPublicKeyFromPeerId, Profile, computeBioEmbedding, FollowEvent } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { registerSW } from 'virtual:pwa-register';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_REPLY, handleIncomingReply, sendReplyMessage, PROTOCOL_QUOTE, handleIncomingQuote, sendQuoteMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_REPLY, handleIncomingReply, sendReplyMessage, PROTOCOL_QUOTE, handleIncomingQuote, sendQuoteMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage, PROTOCOL_DM, handleIncomingDM, sendDMMessage } from '@isc/protocol';
 import { createSignedReaction, sign, encodePayload } from '@isc/core';
 
 export interface SavedChannel extends Channel {
@@ -336,6 +336,75 @@ async function initISC() {
         }
       }
     );
+
+    appState.p2pNode.handle(PROTOCOL_DM, (data: any) => {
+      handleIncomingDM(data.stream, async (msg) => {
+        const remotePeer = data.connection.remotePeer.toString();
+        console.log(`Received encrypted DM from ${remotePeer}`);
+
+        recordPeerEncounter(remotePeer);
+
+        try {
+           if (!appState.keypair) return;
+           const senderPubKey = await getPublicKeyFromPeerId(msg.sender);
+           const senderRawPubKey = await getRawPublicKeyFromPeerId(msg.sender);
+
+           const decrypted = await decryptDirectMessage(msg, appState.keypair, senderRawPubKey, senderPubKey);
+
+           // Use the cryptographically verified sender ID, not just the connection remote peer
+           const authenticatedSender = decrypted.sender;
+
+           if (!appState.activeChats[authenticatedSender]) {
+             appState.activeChats[authenticatedSender] = [];
+           }
+
+           appState.activeChats[authenticatedSender].push({
+             sender: 'peer',
+             text: decrypted.content,
+             timestamp: decrypted.timestamp
+           });
+
+           recordInteraction(authenticatedSender, 'chat', true);
+
+           if (appState.currentChatPeerId === authenticatedSender) {
+             renderChatPanel();
+           } else {
+              // Notify logic
+              renderChannels();
+           }
+        } catch (e) {
+           console.error("Failed to decrypt or verify incoming DM", e);
+        }
+      });
+    });
+
+    // Fallback for Phase 1 unencrypted Protocol compatibility
+    appState.p2pNode.handle(PROTOCOL_CHAT, (data: any) => {
+      handleIncomingChat(data.stream, (msg) => {
+        const remotePeer = data.connection.remotePeer.toString();
+        console.log(`Received cleartext chat from ${remotePeer}:`, msg);
+
+        recordPeerEncounter(remotePeer);
+
+        if (!appState.activeChats[remotePeer]) {
+          appState.activeChats[remotePeer] = [];
+        }
+
+        appState.activeChats[remotePeer].push({
+          sender: 'peer',
+          text: msg.msg,
+          timestamp: Date.now()
+        });
+
+        recordInteraction(remotePeer, 'chat', true);
+
+        if (appState.currentChatPeerId === remotePeer) {
+          renderChatPanel();
+        } else {
+           renderChannels();
+        }
+      });
+    });
 
     appState.p2pNode.handle(PROTOCOL_POST, (data: any) => {
       handleIncomingPost(data.stream, async (post) => {
@@ -678,15 +747,32 @@ async function sendActiveChatMessage() {
   }
 
   try {
-    if (appState.p2pNode) {
-      console.log(`Sending message to ${peerId}: ${text}`);
+    if (appState.p2pNode && appState.keypair) {
+      console.log(`Sending secure DM to ${peerId}`);
       try {
-        // Attempt dialing direct multiaddrs or rely on relay
-        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
-        await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
-        console.log('Message sent successfully!');
+        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_DM);
+        const recipientRawPubKey = await getRawPublicKeyFromPeerId(peerId);
+
+        const dm = await createDirectMessage(
+          appState.keypair,
+          appState.p2pNode.peerId.toString(),
+          peerId,
+          recipientRawPubKey,
+          text
+        );
+
+        await sendDMMessage(stream, dm);
+        console.log('Encrypted DM sent successfully!');
       } catch (dialErr) {
-        console.error(`Dialing peer ${peerId} failed, this is expected in browser-only sim without proper STUN/TURN setups:`, dialErr);
+        console.log(`Dialing peer ${peerId} for secure DM failed, falling back to cleartext chat.`, dialErr);
+
+        try {
+          const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
+          await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
+          console.log('Cleartext fallback message sent successfully!');
+        } catch (fallbackErr) {
+          console.error(`Fallback dialing peer ${peerId} failed:`, fallbackErr);
+        }
       }
     }
   } catch (err) {
