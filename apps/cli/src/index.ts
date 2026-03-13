@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import { cosineSimilarity, lshHash, Channel, computeRelationalDistributions, Distribution } from '@isc/core';
 import { nodeModel, nodeStorage } from '@isc/adapters';
 import { createSignedPost, generateKeypair, RateLimiter, RATE_LIMITS } from '@isc/core';
-import { sendPostMessage, PROTOCOL_POST, sendChatMessage, PROTOCOL_CHAT } from '@isc/protocol';
+import { sendPostMessage, PROTOCOL_POST, sendChatMessage, PROTOCOL_CHAT, sendAnnounceMessage, PROTOCOL_ANNOUNCE } from '@isc/protocol';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
 import { noise } from '@libp2p/noise';
@@ -268,6 +268,75 @@ channelCmd
 
     await nodeStorage.set('isc:channels', channels);
     console.log(`Channel with ID "${id}" deleted successfully.`);
+  });
+
+const announceCmd = program.command('announce');
+
+announceCmd
+  .description('Embed and broadcast a raw channel announcement to connected peers')
+  .argument('<channelID>', 'Associated channel ID')
+  .argument('<description>', 'Channel description to embed')
+  .action(async (channelID: string, description: string) => {
+    // 1. Enforce Rate Limit
+    const rlState = await nodeStorage.get<any>('isc:ratelimits');
+    const limiter = new RateLimiter();
+    if (rlState) {
+      limiter.loadState(new Map(JSON.parse(rlState)));
+    }
+    limiter.cleanup();
+
+    if (!limiter.attempt('local_cli_user', 'ANNOUNCE', RATE_LIMITS.ANNOUNCE)) {
+      console.error(`Rate limit exceeded for ANNOUNCE. Please wait before broadcasting more announcements.`);
+      return;
+    }
+
+    // Save updated state
+    const newState = JSON.stringify(Array.from(limiter.getState().entries()));
+    await nodeStorage.set('isc:ratelimits', newState);
+
+    console.log(`Loading model ${MODEL_ID}...`);
+    await nodeModel.load(MODEL_ID);
+
+    console.log(`Computing embeddings for announcement...`);
+    const embedding = await nodeModel.embed(description);
+
+    const node = await initCliNode();
+    const peerId = node.peerId.toString();
+
+    // In a real CLI app, we would load the saved keypair
+    const keypair = await generateKeypair();
+
+    // Create a mock SignedAnnouncement
+    const announcement = {
+      peerID: peerId,
+      channelID: channelID,
+      model: MODEL_ID,
+      vec: Array.from(embedding),
+      ttl: 300,
+      signature: 'dummy-signature-for-cli' // In Phase 2, sign this
+    };
+
+    const connections = node.getConnections();
+    if (connections.length === 0) {
+      console.log('No peers connected. Cannot broadcast announcement.');
+      await node.stop();
+      return;
+    }
+
+    console.log(`Broadcasting announcement to ${connections.length} peers...`);
+    let sentCount = 0;
+    for (const conn of connections) {
+      try {
+        const stream = await node.dialProtocol(conn.remotePeer, PROTOCOL_ANNOUNCE);
+        await sendAnnounceMessage(stream, announcement);
+        sentCount++;
+      } catch (e) {
+        console.warn(`Failed to send announcement to ${conn.remotePeer.toString()}`);
+      }
+    }
+
+    console.log(`Announcement broadcasted successfully to ${sentCount} peers!`);
+    await node.stop();
   });
 
 const postCmd = program.command('post').description('Post operations');
