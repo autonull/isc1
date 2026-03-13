@@ -99,12 +99,80 @@ export interface SignedReaction extends ReactionPayload {
   signature: Uint8Array;
 }
 
+export interface CommunityChannel {
+  channelID: string;
+  name: string;
+  description: string;
+  members: string[];    // peerIDs
+  coEditors: string[];  // peerIDs with edit permissions
+  embedding: number[];  // Aggregated mean vector
+  createdAt: number;
+  signature: Uint8Array;
+}
+
+export interface CommunityJoinEvent {
+  type: 'community_join';
+  channelID: string;
+  peerID: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
+
 export interface CommunityReport {
   reporter: string;
   targetPostID: string;
   reason: 'off-topic' | 'spam' | 'harassment';
   evidence: string;
   signature: Uint8Array;
+}
+
+
+
+export async function createCommunityChannel(
+  keypair: Keypair,
+  name: string,
+  description: string,
+  embedding: number[],
+  creatorPeerID: string
+): Promise<CommunityChannel> {
+  const payload = {
+    channelID: 'comm_' + Math.random().toString(36).substring(2, 10),
+    name,
+    description,
+    members: [creatorPeerID],
+    coEditors: [creatorPeerID],
+    embedding,
+    createdAt: Date.now()
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature
+  };
+}
+
+export async function createCommunityJoinEvent(
+  keypair: Keypair,
+  channelID: string,
+  peerID: string
+): Promise<CommunityJoinEvent> {
+  const payload = {
+    type: 'community_join' as const,
+    channelID,
+    peerID,
+    timestamp: Date.now()
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature
+  };
 }
 
 export async function createCommunityReport(

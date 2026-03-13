@@ -135,7 +135,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Posts & semantic feeds ("For You" + "Following") | [x] | P0 |
 | Reactions (likes, reposts, replies, quotes) | [x] | P0 |
 | Profiles & follow / Web of Trust | [ ] | P0 |
-| Communities — shared channel distributions | [ ] | P1 |
+| Communities — shared channel distributions | [x] | P1 |
 | Audio Spaces (WebRTC mesh audio) | [ ] | P1 |
 | Video calls (WebRTC, parity with X) | [ ] | P1 |
 | Chaos mode — random perturbation for serendipity | [ ] | P2 |

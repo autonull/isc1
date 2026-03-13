@@ -40,6 +40,7 @@ export const appState: {
   semanticMatchMode: 'monte_carlo' | 'analytic';
   followedPeers: string[];
   peerCreationDates: { [peerId: string]: number };
+  communityChannels: { [channelID: string]: any }; // CommunityChannel objects
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -59,7 +60,8 @@ export const appState: {
   activeFeed: 'for-you',
   semanticMatchMode: 'monte_carlo',
   followedPeers: [],
-  peerCreationDates: {}
+  peerCreationDates: {},
+  communityChannels: {}
 };
 
 async function recordPeerEncounter(peerId: string) {
@@ -91,6 +93,11 @@ async function loadSavedData() {
     const savedCreationDates = await browserStorage.get<{ [peerId: string]: number }>('isc:peer_creation_dates');
     if (savedCreationDates) {
       appState.peerCreationDates = savedCreationDates;
+    }
+
+    const savedCommunityChannels = await browserStorage.get<{ [channelID: string]: any }>('isc:community_channels');
+    if (savedCommunityChannels) {
+      appState.communityChannels = savedCommunityChannels;
     }
 
     const savedQueue = await browserStorage.get<any[]>('isc:offline_queue');
@@ -820,16 +827,25 @@ async function computeTestMatch() {
 }
 
 export async function fetchForYouFeed() {
-  const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  let activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  let activeCommunity = appState.communityChannels[appState.activeChannelId as string];
 
-  // Fetch posts from DHT for the active channel
-  if (navigator.onLine && appState.p2pNode && activeChannel && activeChannel.distributions && activeChannel.distributions.length > 0) {
-    const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
-    // Query DHT based on the root distribution of the active channel
+  // Use community embedding if active, otherwise use channel root distribution
+  let searchMu: number[] | null = null;
+  if (activeCommunity) {
+    searchMu = activeCommunity.embedding;
+  } else if (activeChannel && activeChannel.distributions && activeChannel.distributions.length > 0) {
     const rootDist = activeChannel.distributions.find((d: any) => d.type === 'root');
-    if (rootDist) {
+    if (rootDist) searchMu = rootDist.mu;
+  }
+
+  // Fetch posts from DHT for the active channel/community
+  if (navigator.onLine && appState.p2pNode && searchMu) {
+    const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+    // Query DHT based on the distribution of the active channel
+    if (searchMu) {
       // Find adjacent shards to discover nearby posts
-      const keys = getPostDHTKeys(rootDist.mu, MODEL_ID, 5);
+      const keys = getPostDHTKeys(searchMu, MODEL_ID, 5);
       for (const keyStr of keys) {
         try {
           const keyBytes = new TextEncoder().encode(keyStr);
@@ -878,6 +894,7 @@ export function renderRecentPosts() {
 
 
   const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  const activeCommunity = appState.communityChannels[appState.activeChannelId as string];
 
   // Filter posts based on active feed
   let postsToRender = [...appState.receivedPosts];
@@ -885,11 +902,18 @@ export function renderRecentPosts() {
     postsToRender = postsToRender.filter(p => appState.followedPeers.includes(p.author));
   }
 
-  // Score and sort posts by similarity to the current channel
-  if (appState.activeFeed === 'for-you' && activeChannel && activeChannel.distributions) {
+  // Score and sort posts by similarity to the current channel/community
+  if (appState.activeFeed === 'for-you' && (activeChannel?.distributions || activeCommunity?.embedding)) {
     postsToRender.sort((a, b) => {
-      const coherenceA = checkPostCoherence(a, activeChannel.distributions!);
-      const coherenceB = checkPostCoherence(b, activeChannel.distributions!);
+      let coherenceA = 0;
+      let coherenceB = 0;
+      if (activeCommunity) {
+        coherenceA = checkPostCoherence(a, [{ type: 'root', mu: activeCommunity.embedding, sigma: 0 }]);
+        coherenceB = checkPostCoherence(b, [{ type: 'root', mu: activeCommunity.embedding, sigma: 0 }]);
+      } else if (activeChannel?.distributions) {
+        coherenceA = checkPostCoherence(a, activeChannel.distributions);
+        coherenceB = checkPostCoherence(b, activeChannel.distributions);
+      }
       return coherenceB - coherenceA; // Descending
     });
   } else {
@@ -1508,32 +1532,41 @@ export function renderChannels() {
   const countEl = document.getElementById('settings-channel-count');
   const listEl = document.getElementById('settings-channel-list');
 
-  if (countEl) countEl.textContent = appState.channels.length.toString();
+  if (countEl) countEl.textContent = (appState.channels.length + Object.keys(appState.communityChannels).length).toString();
 
   if (listEl) {
     listEl.innerHTML = '';
-    if (appState.channels.length === 0) {
+
+    const renderChannelItem = (id: string, name: string, isCommunity: boolean) => {
+      const div = document.createElement('div');
+      div.className = `channel-item ${id === appState.activeChannelId ? 'active' : ''}`;
+      div.textContent = (isCommunity ? '🌐 ' : '# ') + name;
+
+      div.addEventListener('click', () => {
+        appState.activeChannelId = id;
+        renderChannels();
+        fetchForYouFeed(); // Fetch when switching channels immediately
+        window.switchView('channel');
+      });
+
+      listEl.appendChild(div);
+    };
+
+    if (appState.channels.length === 0 && Object.keys(appState.communityChannels).length === 0) {
       listEl.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary); font-size: 0.8rem;">No active channels</p>';
     } else {
       appState.channels.forEach(ch => {
-        const div = document.createElement('div');
-        div.className = `channel-item ${ch.id === appState.activeChannelId ? 'active' : ''}`;
-        div.textContent = `# ${ch.name}`;
-
-        div.addEventListener('click', () => {
-          appState.activeChannelId = ch.id;
-          renderChannels();
-          fetchForYouFeed(); // Fetch when switching channels immediately
-          window.switchView('channel');
-        });
-
-        listEl.appendChild(div);
+        renderChannelItem(ch.id, ch.name, false);
+      });
+      Object.values(appState.communityChannels).forEach(comm => {
+        renderChannelItem(comm.channelID, comm.name, true);
       });
     }
   }
 
   // Also start discovery when switching channels if node is ready
   const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  const activeCommunity = appState.communityChannels[appState.activeChannelId as string];
 
   // Update Now tab
   const nowHeader = document.getElementById('now-channel-header');
@@ -1544,7 +1577,7 @@ export function renderChannels() {
   const discoveredPeerIds = Object.keys(appState.discoveredPeers);
 
   if (nowHeader) {
-    if (activeChannel) {
+    if (activeChannel || activeCommunity) {
       nowHeader.innerHTML = '';
 
       const titleDiv = document.createElement('div');
@@ -1554,19 +1587,19 @@ export function renderChannels() {
       dot.className = 'status-dot active';
       dot.textContent = '●';
       h1.appendChild(dot);
-      h1.appendChild(document.createTextNode(' ' + activeChannel.name));
+      h1.appendChild(document.createTextNode(' ' + (activeCommunity ? activeCommunity.name : activeChannel!.name)));
       titleDiv.appendChild(h1);
 
       const desc = document.createElement('p');
       desc.className = 'description';
-      desc.textContent = `"${activeChannel.description}"`;
+      desc.textContent = `"${activeCommunity ? activeCommunity.description : activeChannel!.description}"`;
 
       const meta = document.createElement('div');
       meta.className = 'meta';
       const nearby = document.createElement('span');
       nearby.textContent = `◉ ${discoveredPeerIds.length} nearby`;
       const spread = document.createElement('span');
-      spread.textContent = `Spread: ${activeChannel.spread}`;
+      spread.textContent = `Spread: ${activeCommunity ? '0 (Community)' : activeChannel!.spread}`;
       meta.appendChild(nearby);
       meta.appendChild(spread);
 
@@ -1584,7 +1617,10 @@ export function renderChannels() {
           const peersWithScores = discoveredPeerIds.map(peerId => {
             const hashesMatched = appState.discoveredPeers[peerId].length;
             let simScore = 0;
-            if (activeChannel.distributions && activeChannel.distributions.length > 0) {
+            if (activeCommunity) {
+               // Since we're in a community, we'll just base similarity on whether they are in the community list
+               simScore = (activeCommunity.members && activeCommunity.members.includes(peerId)) ? 1.0 : 0.6;
+            } else if (activeChannel && activeChannel.distributions && activeChannel.distributions.length > 0) {
               const peerMockDistributions = activeChannel.distributions.map(d => ({
                 ...d,
                 mu: d.mu.map((val: number) => val * (0.9 + Math.random() * 0.2)) // minor jitter
@@ -1961,11 +1997,28 @@ function setupCompose() {
     });
   }
 
+  const composeTypeChannel = document.getElementById('compose-type-channel') as HTMLInputElement;
+  const composeTypeCommunity = document.getElementById('compose-type-community') as HTMLInputElement;
+  const composeSpreadContainer = document.getElementById('compose-spread-container');
+
+  if (composeTypeChannel && composeTypeCommunity && composeSpreadContainer) {
+    const updateComposeType = () => {
+      if (composeTypeCommunity.checked) {
+        composeSpreadContainer.style.display = 'none';
+      } else {
+        composeSpreadContainer.style.display = 'block';
+      }
+    };
+    composeTypeChannel.addEventListener('change', updateComposeType);
+    composeTypeCommunity.addEventListener('change', updateComposeType);
+  }
+
   if (btnPublish && inputName && inputDesc && inputSpread && statusEl) {
     btnPublish.addEventListener('click', async () => {
       const name = inputName.value.trim();
       const desc = inputDesc.value.trim();
       const spread = parseInt(inputSpread.value, 10) / 100;
+      const isCommunity = composeTypeCommunity ? composeTypeCommunity.checked : false;
 
       if (!name || !desc) {
         statusEl.textContent = 'Please provide a name and description.';
@@ -1976,19 +2029,52 @@ function setupCompose() {
       (btnPublish as HTMLButtonElement).disabled = true;
 
       try {
-        // Run channel creation and discovery asynchronously so UI unblocks immediately
-        createChannel(name, desc, spread, currentRelations).catch(console.error);
-        statusEl.textContent = 'Channel creation started...';
+        if (isCommunity) {
+          // Create Community Channel
+          statusEl.textContent = 'Creating community...';
+          // Compute embedding synchronously for community creation since we need it for the object
+          let embedding: number[] = [];
+          if (appState.tier === 'high' || appState.tier === 'mid') {
+            embedding = await browserModel.embed(desc);
+          } else {
+            embedding = await wordHashFallbackEmbed(desc);
+            // In a real implementation we would delegate this
+          }
 
-        // Fake immediate local update for responsiveness
-        const newId = Math.random().toString(36).substring(2, 10);
-        appState.channels.push({
-          id: newId,
-          name,
-          description: desc,
-          spread
-        });
-        appState.activeChannelId = newId;
+          const { createCommunityChannel } = await import('@isc/core');
+          const comm = await createCommunityChannel(appState.keypair!, name, desc, embedding, appState.p2pNode.peerId.toString());
+
+          appState.communityChannels[comm.channelID] = comm;
+          await browserStorage.set('isc:community_channels', appState.communityChannels);
+          appState.activeChannelId = comm.channelID;
+
+          // Announce community to DHT so others can join
+          const key = `/isc/community/${comm.channelID}`;
+          const encoded = new TextEncoder().encode(JSON.stringify(comm));
+          // Fire and forget
+          try {
+            const keyBytes = new TextEncoder().encode(key);
+            for await (const _ of appState.p2pNode.services.dht.put(keyBytes, encoded)) {}
+          } catch(e) {
+             console.error("Failed to put community to DHT", e);
+          }
+
+          statusEl.textContent = 'Community created!';
+        } else {
+          // Run channel creation and discovery asynchronously so UI unblocks immediately
+          createChannel(name, desc, spread, currentRelations).catch(console.error);
+          statusEl.textContent = 'Channel creation started...';
+
+          // Fake immediate local update for responsiveness
+          const newId = Math.random().toString(36).substring(2, 10);
+          appState.channels.push({
+            id: newId,
+            name,
+            description: desc,
+            spread
+          });
+          appState.activeChannelId = newId;
+        }
 
         // Reset form
         inputName.value = '';
@@ -2009,6 +2095,81 @@ function setupCompose() {
         (btnPublish as HTMLButtonElement).disabled = false;
       }
     });
+  }
+
+  const btnJoinCommunity = document.getElementById('btn-join-community');
+  const btnCancelJoinCommunity = document.getElementById('btn-cancel-join-community');
+  const inputJoinCommunityId = document.getElementById('join-community-id') as HTMLInputElement;
+  const joinStatusEl = document.getElementById('join-community-status');
+
+  if (btnJoinCommunity && inputJoinCommunityId && joinStatusEl) {
+    btnJoinCommunity.addEventListener('click', async () => {
+      const commId = inputJoinCommunityId.value.trim();
+      if (!commId) return;
+
+      joinStatusEl.textContent = 'Joining community...';
+      (btnJoinCommunity as HTMLButtonElement).disabled = true;
+
+      try {
+        // Fetch community from DHT
+        const key = `/isc/community/${commId}`;
+        const keyBytes = new TextEncoder().encode(key);
+        let foundCommData: Uint8Array | null = null;
+        for await (const event of appState.p2pNode.services.dht.get(keyBytes)) {
+          if (event.name === 'VALUE') {
+            foundCommData = event.value;
+            break;
+          }
+        }
+
+        if (foundCommData) {
+          const comm = JSON.parse(new TextDecoder().decode(foundCommData));
+
+          // Verify
+          // In a real implementation we would check the signature against a known public key
+
+          appState.communityChannels[commId] = comm;
+          await browserStorage.set('isc:community_channels', appState.communityChannels);
+          appState.activeChannelId = commId;
+
+          // Broadcast CommunityJoinEvent via pubsub
+          try {
+            if (appState.p2pNode.services && appState.p2pNode.services.pubsub) {
+              const { createCommunityJoinEvent } = await import('@isc/core');
+              const joinEvent = await createCommunityJoinEvent(appState.keypair!, commId, appState.p2pNode.peerId.toString());
+              const topic = `/isc/community/${commId}`;
+              const encoded = new TextEncoder().encode(JSON.stringify(joinEvent));
+              await appState.p2pNode.services.pubsub.publish(topic, encoded);
+
+              // Also subscribe to the topic to listen for others joining
+              appState.p2pNode.services.pubsub.subscribe(topic);
+              console.log(`Joined and subscribed to community: ${commId}`);
+            }
+          } catch (pubsubErr) {
+            console.error('Failed to broadcast community join event', pubsubErr);
+          }
+
+          joinStatusEl.textContent = 'Joined!';
+          renderChannels();
+          inputJoinCommunityId.value = '';
+          window.switchView('channel');
+        } else {
+          joinStatusEl.textContent = 'Community not found in DHT.';
+        }
+      } catch (err: any) {
+        joinStatusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        (btnJoinCommunity as HTMLButtonElement).disabled = false;
+      }
+    });
+
+    if (btnCancelJoinCommunity) {
+      btnCancelJoinCommunity.addEventListener('click', () => {
+        inputJoinCommunityId.value = '';
+        joinStatusEl.textContent = '';
+        window.switchView('channel');
+      });
+    }
   }
 
   const btnPostInline = document.getElementById('btn-publish-post-inline');
@@ -2116,7 +2277,41 @@ document.addEventListener('DOMContentLoaded', () => {
     if (appState.p2pNode) {
       const topic = `/isc/follow/${appState.p2pNode.peerId.toString()}`;
       appState.p2pNode.services.pubsub.subscribe(topic);
+
+      // Subscribe to joined communities
+      Object.keys(appState.communityChannels).forEach(commId => {
+         const commTopic = `/isc/community/${commId}`;
+         appState.p2pNode.services.pubsub.subscribe(commTopic);
+      });
+
       appState.p2pNode.services.pubsub.addEventListener('message', async (message: any) => {
+        if (message.detail.topic.startsWith('/isc/community/')) {
+          try {
+            const str = new TextDecoder().decode(message.detail.data);
+            const event = JSON.parse(str);
+            if (event.type === 'community_join') {
+              const remoteKey = await getPublicKeyFromPeerId(event.peerID);
+              if (await verifySignature(event, remoteKey)) {
+                console.log(`Received verified community join from ${event.peerID} for ${event.channelID}`);
+                const comm = appState.communityChannels[event.channelID];
+                if (comm) {
+                  if (!comm.members) comm.members = [];
+                  if (!comm.members.includes(event.peerID)) {
+                    comm.members.push(event.peerID);
+                    await browserStorage.set('isc:community_channels', appState.communityChannels);
+                    if (appState.activeChannelId === event.channelID) {
+                       renderChannels();
+                    }
+                  }
+                }
+              }
+            }
+          } catch(e) {
+            console.error("Failed to process community event via pubsub", e);
+          }
+          return;
+        }
+
         if (message.detail.topic !== topic) return;
         try {
           const decoder = new TextDecoder();
@@ -2242,6 +2437,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.switchView = switchView;
 
   document.getElementById('btn-show-compose')?.addEventListener('click', () => switchView('compose'));
+  document.getElementById('btn-show-join-community')?.addEventListener('click', () => switchView('join-community'));
   document.getElementById('btn-show-settings')?.addEventListener('click', () => switchView('settings'));
   document.getElementById('btn-show-test')?.addEventListener('click', () => switchView('test'));
   document.getElementById('btn-show-profile')?.addEventListener('click', () => {
