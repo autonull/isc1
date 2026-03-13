@@ -1,4 +1,4 @@
-import { cosineSimilarity } from '@isc/core';
+import { cosineSimilarity, RateLimiter, RATE_LIMITS } from '@isc/core';
 import { nodeModel } from '@isc/adapters';
 
 import { createLibp2p } from 'libp2p';
@@ -8,10 +8,11 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { mplex } from '@libp2p/mplex';
 import { kadDHT } from '@libp2p/kad-dht';
 import { ping } from '@libp2p/ping';
+import { bootstrap } from '@libp2p/bootstrap';
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { identify } from '@libp2p/identify';
 import { handleIncomingChat, handleIncomingAnnounce, handleDelegateRequest, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_DELEGATE, PROTOCOL_DELEGATION_HEALTH, sendDelegationHealth } from '@isc/protocol';
-import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
+import { privateKeyFromProtobuf, generateKeyPair } from '@libp2p/crypto/keys';
 
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
@@ -22,6 +23,10 @@ async function main() {
   let requestsServed24h = 0;
   let successfulRequests = 0;
   let totalLatencyMs = 0;
+  const limiter = new RateLimiter();
+
+  // Periodically clean up rate limiter
+  setInterval(() => limiter.cleanup(), 60000);
 
   console.log(`Loading embedding model (${MODEL_ID})...`);
 
@@ -31,20 +36,37 @@ async function main() {
 
     // Generated static keypair for testing (PeerID: 12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk)
     const STATIC_KEY_B64 = 'CAESQBlT5Glzyad7fxjvTdhHOIiQsPOCE1EOnC6NCNMpnJ5kjmT/4mFrwuCjOYSr6+A7C9/4GLWV671llATT7cwB/Js=';
-    const privateKey = privateKeyFromProtobuf(Buffer.from(STATIC_KEY_B64, 'base64'));
+
+    // We can allow override of port and key via env vars for multiple nodes
+    const port = process.env.PORT || '9090';
+    let privateKey;
+    if (process.env.PEER_KEY_B64) {
+      privateKey = privateKeyFromProtobuf(Buffer.from(process.env.PEER_KEY_B64, 'base64'));
+    } else if (port === '9090') {
+      privateKey = privateKeyFromProtobuf(Buffer.from(STATIC_KEY_B64, 'base64'));
+    } else {
+      privateKey = await generateKeyPair('Ed25519');
+    }
 
     // Start P2P Node
     const node = await createLibp2p({
       privateKey,
       addresses: {
         // Listen on websockets for browser clients
-        listen: ['/ip4/0.0.0.0/tcp/9090/ws']
+        listen: [`/ip4/0.0.0.0/tcp/${port}/ws`]
       },
       transports: [
         webSockets()
       ],
       connectionEncrypters: [noise()],
       streamMuxers: [yamux(), mplex()],
+      peerDiscovery: [
+        bootstrap({
+          list: [
+            '/ip4/127.0.0.1/tcp/9090/ws/p2p/12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk'
+          ]
+        })
+      ],
       services: {
         ping: ping(),
         identify: identify(),
@@ -69,7 +91,15 @@ async function main() {
     });
 
     node.handle(PROTOCOL_ANNOUNCE, (data: any) => {
-      console.log('Received PROTOCOL_ANNOUNCE stream');
+      const peerId = data.connection.remotePeer.toString();
+      console.log('Received PROTOCOL_ANNOUNCE stream from', peerId);
+
+      if (!limiter.attempt(peerId, 'ANNOUNCE', RATE_LIMITS.ANNOUNCE)) {
+        console.warn(`Rate limit exceeded for ANNOUNCE from ${peerId}`);
+        data.stream.close();
+        return;
+      }
+
       handleIncomingAnnounce(data.stream, (msg) => {
         if (msg.model && msg.model !== MODEL_ID) {
           console.warn(`Dropped announcement due to model mismatch. Expected ${MODEL_ID}, got ${msg.model}`);
@@ -84,7 +114,16 @@ async function main() {
     });
 
     node.handle(PROTOCOL_DELEGATE, async (data: any) => {
-      console.log('Received PROTOCOL_DELEGATE request from', data.connection.remotePeer.toString());
+      const peerId = data.connection.remotePeer.toString();
+      console.log('Received PROTOCOL_DELEGATE request from', peerId);
+
+      if (!limiter.attempt(peerId, 'DELEGATE_REQUEST', RATE_LIMITS.DELEGATE_REQUEST)) {
+        console.warn(`Rate limit exceeded for DELEGATE_REQUEST from ${peerId}`);
+        // Can either close the stream or just return
+        data.stream.close();
+        return;
+      }
+
       // Re-initialize Keypair from the privateKey (naive cast for simulation, real implementation requires proper subtle.CryptoKey setup for libp2p)
       const fakeKeypair = { publicKey: null as any, privateKey: null as any };
 
