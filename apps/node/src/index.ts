@@ -1,4 +1,4 @@
-import { cosineSimilarity, RateLimiter, RATE_LIMITS } from '@isc/core';
+import { cosineSimilarity, RateLimiter, RATE_LIMITS, encodePayload } from '@isc/core';
 import { nodeModel } from '@isc/adapters';
 
 import { createLibp2p } from 'libp2p';
@@ -154,14 +154,22 @@ async function main() {
       const successRate = requestsServed24h > 0 ? successfulRequests / requestsServed24h : 1.0;
       const avgLatencyMs = requestsServed24h > 0 ? totalLatencyMs / requestsServed24h : 50; // default 50ms
 
-      const healthPayload = {
+      const unsignedPayload = {
         type: 'delegation_health' as const,
         peerID: node.peerId.toString(),
         successRate,
         avgLatencyMs,
         requestsServed24h,
-        timestamp: Date.now(),
-        signature: 'dummy-signature-for-now' // In phase 2, properly sign it
+        timestamp: Date.now()
+      };
+
+      const payloadBytes = encodePayload(unsignedPayload);
+      const signatureBytes = await privateKey.sign(payloadBytes);
+      const signatureB64 = Buffer.from(signatureBytes).toString('base64');
+
+      const healthPayload = {
+        ...unsignedPayload,
+        signature: signatureB64
       };
 
       console.log(`Broadcasting health metrics: ${successRate * 100}% success, ${avgLatencyMs}ms avg latency`);

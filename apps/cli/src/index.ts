@@ -306,14 +306,24 @@ announceCmd
     // In a real CLI app, we would load the saved keypair
     const keypair = await generateKeypair();
 
-    // Create a mock SignedAnnouncement
-    const announcement = {
+    // Create the unsigned announcement payload
+    const unsignedAnnouncement = {
       peerID: peerId,
       channelID: channelID,
       model: MODEL_ID,
       vec: Array.from(embedding),
-      ttl: 300,
-      signature: 'dummy-signature-for-cli' // In Phase 2, sign this
+      ttl: 300
+    };
+
+    const { encodePayload, sign } = await import('@isc/core');
+    const payloadBytes = encodePayload(unsignedAnnouncement);
+    const signatureBytes = await sign(payloadBytes, keypair);
+    // Convert signature to base64 for transport
+    const signatureB64 = Buffer.from(signatureBytes).toString('base64');
+
+    const announcement = {
+      ...unsignedAnnouncement,
+      signature: signatureB64
     };
 
     const connections = node.getConnections();
