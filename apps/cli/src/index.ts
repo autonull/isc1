@@ -278,6 +278,23 @@ postCmd
   .argument('<content>', 'Post content')
   .argument('<channelID>', 'Associated channel ID')
   .action(async (content: string, channelID: string) => {
+    // 1. Enforce Rate Limit
+    const rlState = await nodeStorage.get<any>('isc:ratelimits');
+    const limiter = new RateLimiter();
+    if (rlState) {
+      limiter.loadState(new Map(JSON.parse(rlState)));
+    }
+    limiter.cleanup();
+
+    if (!limiter.attempt('local_cli_user', 'ANNOUNCE', RATE_LIMITS.ANNOUNCE)) {
+      console.error(`Rate limit exceeded for ANNOUNCE. Please wait before broadcasting more posts.`);
+      return;
+    }
+
+    // Save updated state
+    const newState = JSON.stringify(Array.from(limiter.getState().entries()));
+    await nodeStorage.set('isc:ratelimits', newState);
+
     console.log(`Loading model ${MODEL_ID}...`);
     await nodeModel.load(MODEL_ID);
 
