@@ -1,0 +1,33 @@
+name: Deploy App to IPFS via Pinata
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types: [published]
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Projects
+        run: npx turbo run build
+
+      - name: Upload to Pinata
+        uses: pinata-cloud/pinata-github-action@1.0.3
+        with:
+          path: './apps/browser/dist'
+          pinName: 'isc-browser-ui'
+          pinataJwt: ${{ secrets.PINATA_JWT }}

@@ -59,7 +59,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Model version negotiation + compatibility shards | [x] | P1 |
 | Device tier auto-detection + delegate mode UI | [x] | P1 |
 | Threat model validation + security audit (community) | [x] | P1 |
-| NAT traversal improvements (circuit relay pool) | [ ] | P2 |
+| NAT traversal improvements (circuit relay pool) | [x] | P2 |
 
 ### Success Criteria
 
@@ -99,7 +99,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Offline-first: queue + background sync | [x] | P1 |
 | Delegation health metrics + supernode ranking | [x] | P1 |
 | PWA — installable on mobile, offline-capable shell | [x] | P1 |
-| IPFS deployment — zero-infra hosting | [ ] | P2 |
+| IPFS deployment — zero-infra hosting | [x] | P2 |
 | Community model registry + migration tooling | [ ] | P2 |
 
 ### Success Criteria
