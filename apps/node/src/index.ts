@@ -40,6 +40,7 @@ async function main() {
     // We can allow override of port and key via env vars for multiple nodes
     const port = process.env.PORT || '9090';
     let privateKey;
+
     if (process.env.PEER_KEY_B64) {
       privateKey = privateKeyFromProtobuf(Buffer.from(process.env.PEER_KEY_B64, 'base64'));
     } else if (port === '9090') {
@@ -47,6 +48,37 @@ async function main() {
     } else {
       privateKey = await generateKeyPair('Ed25519');
     }
+
+    const { getPublicKeyFromPeerId } = await import('@isc/core');
+    const cryptoAPI = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : (await import('crypto')).webcrypto;
+
+    // Extract raw bytes from libp2p private key and build WebCrypto Keypair
+    const rawPriv = privateKey.raw || (privateKey as any).bytes;
+
+    // WebCrypto expects pkcs8 for importing Ed25519 private keys.
+    // However, since @isc/core `sign` uses the standard WebCrypto keypair, we need to create it here.
+    // We construct a simple PKCS8 wrapper around the raw 32-byte Ed25519 private key:
+    const pkcs8 = new Uint8Array(48);
+    pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+    pkcs8.set(rawPriv, 16);
+
+    const webCryptoPriv = await (cryptoAPI.subtle as any).importKey(
+      'pkcs8',
+      pkcs8,
+      { name: 'Ed25519' },
+      true,
+      ['sign']
+    );
+
+    // We need the public key wrapped in WebCrypto as well to satisfy the Keypair interface
+    // Note: getPublicKeyFromPeerId already extracts raw and imports to WebCrypto
+    const peerIdStr = await import('@libp2p/peer-id').then(m => m.peerIdFromKeys(privateKey.publicKey.bytes).toString());
+    const webCryptoPub = await getPublicKeyFromPeerId(peerIdStr);
+
+    let appKeypair = {
+      publicKey: webCryptoPub,
+      privateKey: webCryptoPriv
+    };
 
     // Start P2P Node
     const node = await createLibp2p({
@@ -124,13 +156,10 @@ async function main() {
         return;
       }
 
-      // Re-initialize Keypair from the privateKey (naive cast for simulation, real implementation requires proper subtle.CryptoKey setup for libp2p)
-      const fakeKeypair = { publicKey: null as any, privateKey: null as any };
-
       const capabilities = {
         maxConcurrentRequests: 10,
         modelAdapter: nodeModel,
-        supernodeKeypair: fakeKeypair
+        supernodeKeypair: appKeypair
       };
 
       const startTime = Date.now();

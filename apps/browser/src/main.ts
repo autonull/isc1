@@ -1003,9 +1003,12 @@ export function renderRecentPosts() {
             follower: peerId,
             followee: post.author,
             timestamp: Date.now(),
-            signature: new Uint8Array(0) // placeholder
+            signature: new Uint8Array(0)
           };
-          const encoded = encodePayload(event);
+
+          // Sign the event properly
+          const { signature, ...eventWithoutSig } = event;
+          const encoded = encodePayload(eventWithoutSig);
           event.signature = await sign(encoded, appState.keypair);
 
           const topic = `/isc/follow/${post.author}`;
@@ -2225,11 +2228,12 @@ function setupCompose() {
         const embedding = await embedFn(desc);
 
         const peerId = appState.p2pNode.peerId.toString();
+        const channelID = appState.activeChannelId || 'unknown-channel';
         const post = await createSignedPost(
           appState.keypair!,
           peerId,
           desc,
-          'temp-id',
+          channelID,
           embedding,
           86400000,
           undefined,
