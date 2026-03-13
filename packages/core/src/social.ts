@@ -1,6 +1,37 @@
 import { Keypair, sign, encodePayload, verify } from './crypto.js';
-import { cosineSimilarity, lshHash } from './math.js';
+import { cosineSimilarity, lshHash, meanVector } from './math.js';
 import { Distribution } from './semantic.js';
+
+export interface ChannelSummary {
+  channelID: string;
+  name: string;
+  description: string;
+  embedding: number[];
+  postCount: number;
+  latestEmbedding: number[];
+}
+
+export interface Profile {
+  peerID: string;
+  bio?: string;
+  bioEmbedding?: number[];  // Computed: mean(channelEmbeddings)
+  channels: ChannelSummary[];
+  followerCount: number;
+  followingCount: number;
+  joinedAt: number;
+}
+
+export interface SignedProfile extends Profile {
+  signature: Uint8Array;
+}
+
+export interface FollowEvent {
+  type: 'follow' | 'unfollow';
+  follower: string;
+  followee: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
 
 export interface SignedPost {
   type: 'post';
@@ -166,4 +197,14 @@ export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promis
   };
   const encoded = encodePayload(payload);
   return await verify(encoded, post.signature, publicKey);
+}
+
+/**
+ * Computes the mean bio embedding from a profile's channels.
+ */
+export function computeBioEmbedding(profile: Profile): number[] {
+  if (profile.channels.length === 0) return [];
+  const embeddings = profile.channels.map(c => c.latestEmbedding).filter(e => e.length > 0);
+  if (embeddings.length === 0) return [];
+  return meanVector(embeddings);
 }

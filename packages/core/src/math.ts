@@ -3,6 +3,33 @@
  * Returns a value between -1 and 1.
  * Handles near-zero vectors gracefully.
  */
+/**
+ * Computes the element-wise mean of an array of vectors.
+ * Returns an empty array if the input is empty.
+ */
+export function meanVector(vectors: number[][]): number[] {
+  if (vectors.length === 0) return [];
+  if (vectors[0].length === 0) return [];
+
+  const dims = vectors[0].length;
+  const mean = new Array(dims).fill(0);
+
+  for (const vec of vectors) {
+    if (vec.length !== dims) {
+      throw new Error('All vectors must have the same dimensionality');
+    }
+    for (let i = 0; i < dims; i++) {
+      mean[i] += vec[i];
+    }
+  }
+
+  for (let i = 0; i < dims; i++) {
+    mean[i] /= vectors.length;
+  }
+
+  return mean;
+}
+
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) {
     throw new Error('Vectors must have the same length');

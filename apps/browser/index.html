@@ -33,6 +33,7 @@
         </div>
 
         <div class="sidebar-footer">
+          <button class="btn-icon" id="btn-show-profile" title="Profile">👤 Profile</button>
           <button class="btn-icon" id="btn-show-settings" title="Settings">⚙️ Settings</button>
           <button class="btn-icon" id="btn-show-test" title="Test Match">🧪 Test</button>
         </div>
@@ -127,10 +128,48 @@
           </div>
         </section>
 
+        <!-- View: Profile -->
+        <section id="view-profile" class="pane-view">
+          <header class="compose-header">
+            <h2 id="profile-view-title">Profile</h2>
+          </header>
+          <div class="compose-body">
+            <div class="card" style="margin-bottom: 2rem;">
+              <h3 style="margin-top: 0;">Peer ID</h3>
+              <p id="profile-view-peer-id" style="word-break: break-all; font-family: monospace; color: var(--text-secondary);">Loading...</p>
+
+              <div style="display: flex; gap: 2rem; margin-top: 1rem;">
+                <div>
+                  <strong id="profile-view-followers">0</strong>
+                  <span style="color: var(--text-secondary); font-size: 0.9rem;"> Followers</span>
+                </div>
+                <div>
+                  <strong id="profile-view-following">0</strong>
+                  <span style="color: var(--text-secondary); font-size: 0.9rem;"> Following</span>
+                </div>
+              </div>
+
+              <p id="profile-view-joined" style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 1rem;">Joined: -</p>
+            </div>
+
+            <h3>Bio Embedding Summary</h3>
+            <div class="card" style="margin-bottom: 2rem;">
+              <p id="profile-view-bio" style="color: var(--text-secondary); font-size: 0.9rem;">
+                No aggregated channel distribution available.
+              </p>
+            </div>
+
+            <h3>Channels (<span id="profile-view-channel-count">0</span>)</h3>
+            <div id="profile-view-channel-list" style="display: flex; flex-direction: column; gap: 0.5rem;">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </section>
+
         <!-- View: Settings -->
         <section id="view-settings" class="pane-view">
           <header class="compose-header">
-            <h2>Settings & Profile</h2>
+            <h2>Settings</h2>
           </header>
           <div class="compose-body">
             <h3>Your Peer ID</h3>
