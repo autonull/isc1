@@ -3,6 +3,33 @@
  * Returns a value between -1 and 1.
  * Handles near-zero vectors gracefully.
  */
+/**
+ * Computes the element-wise mean of an array of vectors.
+ * Returns an empty array if the input is empty.
+ */
+export function meanVector(vectors: number[][]): number[] {
+  if (vectors.length === 0) return [];
+  if (vectors[0].length === 0) return [];
+
+  const dims = vectors[0].length;
+  const mean = new Array(dims).fill(0);
+
+  for (const vec of vectors) {
+    if (vec.length !== dims) {
+      throw new Error('All vectors must have the same dimensionality');
+    }
+    for (let i = 0; i < dims; i++) {
+      mean[i] += vec[i];
+    }
+  }
+
+  for (let i = 0; i < dims; i++) {
+    mean[i] /= vectors.length;
+  }
+
+  return mean;
+}
+
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) {
     throw new Error('Vectors must have the same length');
@@ -25,36 +52,14 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-/**
- * Computes seeded Locality-Sensitive Hashing (LSH).
- * In Phase 1, we simulate this with a deterministic pseudo-random projection.
- */
-export function lshHash(vec: number[], seed: string, numHashes: number): string[] {
-  const hashes: string[] = [];
-
-  // Simple LSH implementation using random projection
-  // We use the seed to deterministically generate projection vectors
-  for (let i = 0; i < numHashes; i++) {
-    const projection = generateDeterministicVector(vec.length, `${seed}_${i}`);
-    const dot = dotProduct(vec, projection);
-    // Simple 1-bit quantization per projection, accumulated into a string
-    // In a real implementation this would generate multiple multi-bit hashes
-    const bit = dot > 0 ? '1' : '0';
-    // For test purposes, we'll return strings that look like hashes
-    hashes.push(`hash_${seed}_${i}_${bit}`);
-  }
-
-  return hashes;
-}
-
-// Simple deterministic random number generator based on a string seed
+// Mulberry32 PRNG for stable, high-quality pseudo-random numbers
+// Replacing the flawed LCG from PROTOCOL.md with a robust 32-bit generator
 function pseudoRandom(seedStr: string): () => number {
   let hash = 0;
   for (let i = 0; i < seedStr.length; i++) {
     hash = Math.imul(31, hash) + seedStr.charCodeAt(i) | 0;
   }
 
-  // Mulberry32
   let a = hash;
   return function() {
     var t = a += 0x6D2B79F5;
@@ -64,23 +69,40 @@ function pseudoRandom(seedStr: string): () => number {
   }
 }
 
-function generateDeterministicVector(length: number, seed: string): number[] {
-  const prng = pseudoRandom(seed);
-  const vec = new Array(length);
-  for (let i = 0; i < length; i++) {
-    // Normal distribution approximation (Box-Muller)
-    let u = 0, v = 0;
-    while(u === 0) u = prng();
-    while(v === 0) v = prng();
-    vec[i] = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-  }
-  return vec;
-}
+/**
+ * Computes seeded Locality-Sensitive Hashing (LSH).
+ * Mapped to DHT keys via seeded random-projection LSH.
+ */
+export function lshHash(vec: number[], seed: string, numHashes: number = 20, hashLen: number = 32): string[] {
+  const rng = pseudoRandom(seed);
+  const hashes: string[] = [];
 
-function dotProduct(a: number[], b: number[]): number {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) {
-    sum += a[i] * b[i];
+  for (let i = 0; i < numHashes; i++) {
+    let hashBits = '';
+
+    // Each hash requires hashLen projections
+    for (let h = 0; h < hashLen; h++) {
+      // Generate projection vector using Box-Muller transform for spherical symmetry
+      const proj = new Array(vec.length);
+      for (let j = 0; j < vec.length; j++) {
+        let u = 0, v = 0;
+        while (u === 0) u = rng(); // (0, 1) range
+        while (v === 0) v = rng();
+        proj[j] = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+      }
+
+      // Project vector onto random hyperplane using dot product
+      let dotProduct = 0;
+      for (let j = 0; j < vec.length; j++) {
+        dotProduct += vec[j] * proj[j];
+      }
+
+      // 1 if positive, 0 if negative
+      hashBits += dotProduct > 0 ? '1' : '0';
+    }
+
+    hashes.push(hashBits);
   }
-  return sum;
+
+  return hashes;
 }

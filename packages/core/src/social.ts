@@ -1,5 +1,55 @@
-import { Keypair, sign, encodePayload } from './crypto.js';
-import { lshHash } from './math.js';
+import { Keypair, sign, encodePayload, verify, encryptForPeer, decryptFromPeer, exportPrivateKeyBytes } from './crypto.js';
+import { cosineSimilarity, lshHash, meanVector } from './math.js';
+import { Distribution } from './semantic.js';
+
+export interface ChannelSummary {
+  channelID: string;
+  name: string;
+  description: string;
+  embedding: number[];
+  postCount: number;
+  latestEmbedding: number[];
+}
+
+export interface Profile {
+  peerID: string;
+  bio?: string;
+  bioEmbedding?: number[];  // Computed: mean(channelEmbeddings)
+  channels: ChannelSummary[];
+  followerCount: number;
+  followingCount: number;
+  joinedAt: number;
+}
+
+export interface SignedProfile extends Profile {
+  signature: Uint8Array;
+}
+
+export interface DirectMessage {
+  type: 'dm';
+  sender: string;
+  recipient: string;
+  timestamp: number;
+  signature: Uint8Array;
+  encrypted: Uint8Array;  // E2E encrypted payload
+}
+
+export interface DecryptedDirectMessage {
+  type: 'dm';
+  sender: string;
+  recipient: string;
+  content: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
+
+export interface FollowEvent {
+  type: 'follow' | 'unfollow';
+  follower: string;
+  followee: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
 
 export interface SignedPost {
   type: 'post';
@@ -11,6 +61,21 @@ export interface SignedPost {
   timestamp: number;
   ttl: number;
   signature: Uint8Array;
+  isPending?: boolean;
+
+  // Reactions arrays (populated locally or via network)
+  likes?: string[]; // Array of peer IDs
+  reposts?: string[]; // Array of peer IDs
+  replies?: SignedPost[]; // Array of reply posts
+
+  // Optional Quote references
+  quoteOf?: string; // targetPostID
+
+  // Optional Reply reference
+  replyTo?: string; // targetPostID
+
+  // Optional IPFS link
+  ipfsLink?: string;
 }
 
 export interface PostPayload {
@@ -22,6 +87,109 @@ export interface PostPayload {
   embedding: number[];
   timestamp: number;
   ttl: number;
+  quoteOf?: string;
+  replyTo?: string;
+  ipfsLink?: string;
+}
+
+export interface ReactionPayload {
+  type: 'like' | 'repost';
+  targetPostID: string;
+  author: string;
+  timestamp: number;
+}
+
+export interface SignedReaction extends ReactionPayload {
+  signature: Uint8Array;
+}
+
+export interface CommunityChannel {
+  channelID: string;
+  name: string;
+  description: string;
+  members: string[];    // peerIDs
+  coEditors: string[];  // peerIDs with edit permissions
+  embedding: number[];  // Aggregated mean vector
+  createdAt: number;
+  signature: Uint8Array;
+}
+
+export interface CommunityJoinEvent {
+  type: 'community_join';
+  channelID: string;
+  peerID: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
+
+export interface CommunityReport {
+  reporter: string;
+  targetPostID: string;
+  reason: 'off-topic' | 'spam' | 'harassment';
+  evidence: string;
+  signature: Uint8Array;
+}
+
+
+
+export async function createCommunityChannel(
+  keypair: Keypair,
+  name: string,
+  description: string,
+  embedding: number[],
+  creatorPeerID: string
+): Promise<CommunityChannel> {
+  const payload = {
+    channelID: 'comm_' + Math.random().toString(36).substring(2, 10),
+    name,
+    description,
+    members: [creatorPeerID],
+    coEditors: [creatorPeerID],
+    embedding,
+    createdAt: Date.now()
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature
+  };
+}
+
+export async function createCommunityJoinEvent(
+  keypair: Keypair,
+  channelID: string,
+  peerID: string
+): Promise<CommunityJoinEvent> {
+  const payload = {
+    type: 'community_join' as const,
+    channelID,
+    peerID,
+    timestamp: Date.now()
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature
+  };
+}
+
+export async function createCommunityReport(
+  keypair: Keypair,
+  reporter: string,
+  targetPostID: string,
+  reason: 'off-topic' | 'spam' | 'harassment',
+  evidence: string
+): Promise<CommunityReport> {
+  const payload = { reporter, targetPostID, reason, evidence };
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+  return { ...payload, signature };
 }
 
 export async function createSignedPost(
@@ -30,7 +198,10 @@ export async function createSignedPost(
   content: string,
   channelID: string,
   embedding: number[],
-  ttl: number = 86400000 // default 24h
+  ttl: number = 86400000, // default 24h
+  quoteOf?: string,
+  replyTo?: string,
+  ipfsLink?: string
 ): Promise<SignedPost> {
   const payload: PostPayload = {
     type: 'post',
@@ -41,6 +212,34 @@ export async function createSignedPost(
     embedding,
     timestamp: Date.now(),
     ttl,
+    ...(quoteOf ? { quoteOf } : {}),
+    ...(replyTo ? { replyTo } : {}),
+    ...(ipfsLink ? { ipfsLink } : {})
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature,
+    likes: [],
+    reposts: [],
+    replies: []
+  };
+}
+
+export async function createSignedReaction(
+  keypair: Keypair,
+  peerID: string,
+  targetPostID: string,
+  type: 'like' | 'repost'
+): Promise<SignedReaction> {
+  const payload: ReactionPayload = {
+    type,
+    targetPostID,
+    author: peerID,
+    timestamp: Date.now()
   };
 
   const encoded = encodePayload(payload);
@@ -50,4 +249,127 @@ export async function createSignedPost(
     ...payload,
     signature
   };
+}
+
+/**
+ * Checks if a post is coherent with a channel's semantic space.
+ * Off-vector posts can be naturally deprioritized.
+ */
+export function checkPostCoherence(post: SignedPost, channelDistributions: Distribution[]): number {
+  if (!channelDistributions || channelDistributions.length === 0) {
+    return 0; // Or some default, but distributions should be computed
+  }
+  const channelEmbedding = channelDistributions[0].mu;
+  return cosineSimilarity(channelEmbedding, post.embedding);
+}
+
+/**
+ * Generates the DHT keys for a given post embedding.
+ */
+export function getPostDHTKeys(embedding: number[], modelHash: string, numHashes: number = 5): string[] {
+  const hashes = lshHash(embedding, modelHash, numHashes);
+  return hashes.map(hash => `/isc/post/${modelHash.replace(/\//g, '_')}/${hash}`);
+}
+
+/**
+ * Validates a signed post.
+ */
+export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promise<boolean> {
+  const payload: PostPayload = {
+    type: post.type,
+    postID: post.postID,
+    author: post.author,
+    content: post.content,
+    channelID: post.channelID,
+    embedding: post.embedding,
+    timestamp: post.timestamp,
+    ttl: post.ttl,
+    ...(post.quoteOf ? { quoteOf: post.quoteOf } : {}),
+    ...(post.replyTo ? { replyTo: post.replyTo } : {}),
+    ...(post.ipfsLink ? { ipfsLink: post.ipfsLink } : {})
+  };
+  const encoded = encodePayload(payload);
+  return await verify(encoded, post.signature, publicKey);
+}
+
+/**
+ * Creates and encrypts a Direct Message for a specific recipient.
+ */
+export async function createDirectMessage(
+  keypair: Keypair,
+  senderPeerID: string,
+  recipientPeerID: string,
+  recipientPublicKeyBytes: Uint8Array,
+  content: string
+): Promise<DirectMessage> {
+  const senderPrivBytes = await exportPrivateKeyBytes(keypair.privateKey);
+  const payloadBytes = new TextEncoder().encode(content);
+
+  const encrypted = await encryptForPeer(payloadBytes, senderPrivBytes, recipientPublicKeyBytes);
+
+  const dm: DirectMessage = {
+    type: 'dm',
+    sender: senderPeerID,
+    recipient: recipientPeerID,
+    timestamp: Date.now(),
+    encrypted,
+    signature: new Uint8Array(0)
+  };
+
+  const payloadToSign = {
+    type: dm.type,
+    sender: dm.sender,
+    recipient: dm.recipient,
+    timestamp: dm.timestamp,
+    encrypted: Array.from(dm.encrypted) // Ensure array for stable stringify
+  };
+
+  dm.signature = await sign(encodePayload(payloadToSign), keypair);
+  return dm;
+}
+
+/**
+ * Decrypts a Direct Message from a sender.
+ */
+export async function decryptDirectMessage(
+  dm: DirectMessage,
+  recipientKeypair: Keypair,
+  senderPublicKeyBytes: Uint8Array,
+  senderPublicKey: CryptoKey // For signature verification
+): Promise<DecryptedDirectMessage> {
+  const payloadToVerify = {
+    type: dm.type,
+    sender: dm.sender,
+    recipient: dm.recipient,
+    timestamp: dm.timestamp,
+    encrypted: Array.from(dm.encrypted)
+  };
+
+  const isValid = await verify(encodePayload(payloadToVerify), dm.signature, senderPublicKey);
+  if (!isValid) {
+    throw new Error('Invalid signature on Direct Message');
+  }
+
+  const recipientPrivBytes = await exportPrivateKeyBytes(recipientKeypair.privateKey);
+  const decryptedBytes = await decryptFromPeer(dm.encrypted, recipientPrivBytes, senderPublicKeyBytes);
+  const content = new TextDecoder().decode(decryptedBytes);
+
+  return {
+    type: 'dm',
+    sender: dm.sender,
+    recipient: dm.recipient,
+    content,
+    timestamp: dm.timestamp,
+    signature: dm.signature
+  };
+}
+
+/**
+ * Computes the mean bio embedding from a profile's channels.
+ */
+export function computeBioEmbedding(profile: Profile): number[] {
+  if (profile.channels.length === 0) return [];
+  const embeddings = profile.channels.map(c => c.latestEmbedding).filter(e => e.length > 0);
+  if (embeddings.length === 0) return [];
+  return meanVector(embeddings);
 }

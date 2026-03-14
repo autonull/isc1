@@ -6,68 +6,101 @@
     <meta name="theme-color" content="#6366F1" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <link rel="manifest" href="/manifest.json" />
     <title>ISC — Meet your thought neighbors</title>
     <link rel="stylesheet" href="/src/style.css" />
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" href="/icon-192.png" type="image/png">
+    <link rel="apple-touch-icon" href="/icon-192.png">
   </head>
   <body>
-    <div id="app">
-      <!-- Top Navigation -->
-      <nav id="top-nav">
-        <button class="nav-btn active" data-tab="now">🏠 Now</button>
-        <button class="nav-btn" data-tab="discover">📡 Discover</button>
-        <button class="nav-btn" data-tab="compose">➕ Compose</button>
-        <button class="nav-btn" data-tab="chats">💬 Chats</button>
-        <button class="nav-btn" data-tab="settings">⚙️ Settings</button>
-        <button class="nav-btn" data-tab="test">🧪 Test Match</button>
-      </nav>
+    <div id="app" class="irc-layout">
+      <!-- Left Sidebar: Channels and Settings -->
+      <aside id="sidebar-left" class="sidebar">
+        <div class="sidebar-header">
+          <h2>ISC Network</h2>
+        </div>
+        <div class="sidebar-content">
+          <h3 class="sidebar-title">YOUR CHANNELS (<span id="settings-channel-count">0</span>)</h3>
+          <div class="channel-list" id="settings-channel-list">
+            <p style="padding: 1rem; color: var(--text-secondary); font-size: 0.8rem;">No active channels</p>
+          </div>
+          <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+            <button class="btn-primary btn-full" id="btn-show-compose" style="flex: 1;">➕ New Channel</button>
+            <button class="btn-primary btn-full" id="btn-show-join-community" style="flex: 1; background-color: var(--accent-secondary); color: white;">🔗 Join</button>
+          </div>
 
-      <!-- Main Content Area -->
-      <main id="main-content">
+          <h3 class="sidebar-title" style="margin-top: 2rem;">CHATS</h3>
+          <div class="chat-list" id="chat-list">
+            <p style="padding: 1rem; color: var(--text-secondary); font-size: 0.8rem;">No active chats.</p>
+          </div>
+        </div>
 
-        <!-- Tab 1: Now -->
-        <section id="tab-now" class="tab-content active">
+        <div class="sidebar-footer">
+          <button class="btn-icon" id="btn-show-profile" title="Profile">👤 Profile</button>
+          <button class="btn-icon" id="btn-show-settings" title="Settings">⚙️ Settings</button>
+          <button class="btn-icon" id="btn-show-test" title="Test Match">🧪 Test</button>
+        </div>
+      </aside>
+
+      <!-- Center Pane: Main Content (Feed/Chat/Compose/Settings) -->
+      <main id="main-content" class="center-pane">
+
+        <!-- View: Active Channel Feed (Default) -->
+        <section id="view-channel" class="pane-view active">
           <header class="channel-header" id="now-channel-header">
-            <p>Select or create a channel to start matching.</p>
+            <div class="channel-title">
+              <h1><span class="status-dot">●</span> Select or create a channel</h1>
+            </div>
           </header>
-          <div class="match-list-sections" id="now-match-list">
-            <div id="matches-very-close">
-              <h3 class="section-title">VERY CLOSE (0.85+)</h3>
-              <div class="matches-container"></div>
-            </div>
-            <div id="matches-nearby">
-              <h3 class="section-title">NEARBY (0.70 - 0.85)</h3>
-              <div class="matches-container"></div>
-            </div>
-            <div id="matches-orbiting">
-              <h3 class="section-title">ORBITING (0.55 - 0.70)</h3>
-              <div class="matches-container"></div>
-            </div>
+
+          <div class="feed-tabs" style="display: flex; gap: 1rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem; margin-bottom: 1rem;">
+            <button id="tab-for-you" class="btn-tab active" style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-weight: bold;">For You</button>
+            <button id="tab-following" class="btn-tab" style="background: none; border: none; color: var(--text-secondary); cursor: pointer;">Following</button>
+          </div>
+
+          <div class="channel-feed" id="discover-recent-posts">
+            <p style="padding: 2rem; color: var(--text-secondary); text-align: center;">No recent posts from peers yet.</p>
+          </div>
+          <div class="chat-input-area inline-compose">
+             <input type="text" id="compose-post-input" placeholder="Type a new post (max 280 chars)..." maxlength="280" />
+             <input type="text" id="compose-post-ipfs" placeholder="IPFS Link (optional)" style="flex: 0.3;" />
+             <button id="btn-publish-post-inline" class="btn-primary">Post</button>
           </div>
         </section>
 
-        <!-- Tab 2: Discover -->
-        <section id="tab-discover" class="tab-content">
-          <div class="search-bar">
-            <input type="text" id="discover-search-input" placeholder="🔍 Search thoughts..." />
+        <!-- View: Chat Panel -->
+        <section id="view-chat" class="pane-view">
+          <div class="chat-panel-header">
+            <button id="btn-close-chat" class="btn-icon">← Back</button>
+            <div class="chat-panel-title">
+              <h3 id="chat-peer-id">Peer</h3>
+              <span class="chat-similarity">Direct Message</span>
+            </div>
           </div>
-          <h3>Discovered Peers</h3>
-          <div class="trending-cards" id="discover-trending-cards">
-          </div>
-
-          <h3 style="margin-top: 2rem;">Recent Posts</h3>
-          <div class="post-list" id="discover-recent-posts">
-            <p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>
+          <div class="chat-messages" id="chat-messages"></div>
+          <div class="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Type message..." />
+            <button id="btn-send-chat" class="btn-primary" style="margin-top: 0; width: auto; margin-left: 0.5rem;">Send</button>
           </div>
         </section>
 
-        <!-- Tab 3: Compose -->
-        <section id="tab-compose" class="tab-content">
+        <!-- View: Compose Channel -->
+        <section id="view-compose" class="pane-view">
           <header class="compose-header">
-            <button class="btn-cancel" id="btn-compose-cancel">← Cancel</button>
             <h2>New Channel</h2>
           </header>
           <div class="compose-body">
+            <div style="display: flex; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--bg-elevated); border-radius: 8px;">
+              <label style="display: flex; align-items: center; gap: 0.5rem; margin: 0; cursor: pointer;">
+                <input type="radio" name="compose-type" id="compose-type-channel" value="channel" checked />
+                Personal Channel
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; margin: 0; cursor: pointer;">
+                <input type="radio" name="compose-type" id="compose-type-community" value="community" />
+                Community
+              </label>
+            </div>
+
             <label>Channel Name</label>
             <input type="text" id="compose-name" placeholder="E.g., AI Ethics" />
 
@@ -82,6 +115,11 @@
                 <option value="with_mood">🎭 Mood (What's the emotional context?)</option>
                 <option value="under_domain">🏷 Domain (What field or discipline?)</option>
                 <option value="causes_effect">⚡ Causes (What causes what?)</option>
+                <option value="part_of">🧩 Part Of (What is this a part of?)</option>
+                <option value="similar_to">🔗 Similar To (What is this like?)</option>
+                <option value="opposed_to">⚖️ Opposed To (What is this against?)</option>
+                <option value="requires">🧱 Requires (What does this need?)</option>
+                <option value="boosted_by">🚀 Boosted By (What amplifies this?)</option>
               </select>
               <input type="text" id="context-object-input" placeholder="e.g. lat:35.68, long:139.69, radius:50km" />
               <button class="btn-secondary" id="btn-confirm-context">Add</button>
@@ -89,7 +127,7 @@
             <div class="context-list" id="compose-context-list">
             </div>
 
-            <div class="spread-control">
+            <div class="spread-control" id="compose-spread-container">
               <label>How specific are you being?</label>
               <div class="slider-wrapper">
                 <span>Precise</span>
@@ -99,75 +137,124 @@
             </div>
 
             <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
-              <button class="btn-primary" id="btn-publish-channel" style="flex: 1;">Publish Channel</button>
-              <button class="btn-secondary" id="btn-publish-post" style="flex: 1;">Post to Peers</button>
+              <button class="btn-primary" id="btn-publish-channel" style="flex: 1;">Create Channel</button>
             </div>
             <div id="compose-status" style="margin-top: 1rem; color: var(--text-secondary);"></div>
           </div>
         </section>
 
-        <!-- Tab 4: Chats -->
-        <section id="tab-chats" class="tab-content">
-          <header class="chats-header">
-            <h2>Chats</h2>
+        <!-- View: Profile -->
+        <section id="view-profile" class="pane-view">
+          <header class="compose-header">
+            <h2 id="profile-view-title">Profile</h2>
+            <button id="btn-edit-profile" class="btn-secondary btn-sm" style="display: none;">Edit Bio</button>
           </header>
-          <div class="chat-list" id="chat-list">
-            <p>No active chats.</p>
-          </div>
+          <div class="compose-body">
+            <div class="card" style="margin-bottom: 2rem;">
+              <h3 style="margin-top: 0;">Peer ID</h3>
+              <p id="profile-view-peer-id" style="word-break: break-all; font-family: monospace; color: var(--text-secondary);">Loading...</p>
 
-          <!-- Slide-Up Chat Panel -->
-          <div id="chat-panel" class="chat-panel">
-            <div class="chat-panel-header">
-              <button id="btn-close-chat" class="btn-icon">✖</button>
-              <div class="chat-panel-title">
-                <h3 id="chat-peer-id">Peer</h3>
-                <span class="chat-similarity">0.0 similarity</span>
+              <div style="display: flex; gap: 2rem; margin-top: 1rem;">
+                <div>
+                  <strong id="profile-view-followers">0</strong>
+                  <span style="color: var(--text-secondary); font-size: 0.9rem;"> Followers</span>
+                </div>
+                <div>
+                  <strong id="profile-view-following">0</strong>
+                  <span style="color: var(--text-secondary); font-size: 0.9rem;"> Following</span>
+                </div>
+              </div>
+
+              <p id="profile-view-joined" style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 1rem;">Joined: -</p>
+            </div>
+
+            <div id="profile-editor-container" class="card" style="display: none; margin-bottom: 2rem; border: 1px solid var(--primary);">
+              <h3 style="margin-top: 0; color: var(--primary);">Edit Bio</h3>
+              <textarea id="profile-edit-bio-input" rows="3" placeholder="Write a short bio about yourself..." style="width: 100%; margin-bottom: 1rem;"></textarea>
+              <div style="display: flex; gap: 1rem;">
+                <button id="btn-save-profile" class="btn-primary" style="flex: 1;">Save</button>
+                <button id="btn-cancel-edit-profile" class="btn-secondary" style="flex: 1;">Cancel</button>
               </div>
             </div>
-            <div class="chat-messages" id="chat-messages"></div>
-            <div class="chat-input-area">
-              <input type="text" id="chat-input" placeholder="Type message..." />
-              <button id="btn-send-chat" class="btn-primary" style="margin-top: 0; width: auto; margin-left: 0.5rem;">Send</button>
+
+            <h3>Bio</h3>
+            <div class="card" style="margin-bottom: 2rem;">
+              <p id="profile-view-custom-bio" style="font-size: 1rem; margin-bottom: 1rem;">No bio provided.</p>
+              <h4 style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase;">Semantic Summary</h4>
+              <p id="profile-view-bio" style="color: var(--text-secondary); font-size: 0.9rem;">
+                No aggregated channel distribution available.
+              </p>
+            </div>
+
+            <h3>Channels (<span id="profile-view-channel-count">0</span>)</h3>
+            <div id="profile-view-channel-list" style="display: flex; flex-direction: column; gap: 0.5rem;">
+              <!-- Populated dynamically -->
             </div>
           </div>
         </section>
 
-        <!-- Tab 5: Settings -->
-        <section id="tab-settings" class="tab-content">
-          <h2>Profile</h2>
-          <div class="profile-card">
+        <!-- View: Join Community -->
+        <section id="view-join-community" class="pane-view">
+          <header class="compose-header">
+            <h2>Join Community Channel</h2>
+          </header>
+          <div class="compose-body">
+            <label>Community Channel ID</label>
+            <input type="text" id="join-community-id" placeholder="comm_abc123" />
+            <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+              <button class="btn-primary" id="btn-join-community" style="flex: 1;">Join</button>
+              <button class="btn-icon" id="btn-cancel-join-community" style="flex: 1;">Cancel</button>
+            </div>
+            <p id="join-community-status" class="compose-status" style="margin-top: 1rem;"></p>
+          </div>
+        </section>
+
+        <!-- View: Settings -->
+        <section id="view-settings" class="pane-view">
+          <header class="compose-header">
+            <h2>Settings</h2>
+          </header>
+          <div class="compose-body">
             <h3>Your Peer ID</h3>
-            <p id="profile-peer-id">Loading...</p>
-            <p class="bio" id="profile-bio">"No active channels"</p>
-          </div>
-
-          <h3>Your Channels (<span id="settings-channel-count">0</span>)</h3>
-          <div class="channel-list" id="settings-channel-list">
-          </div>
-
-          <h3 style="margin-top: 2rem;">Device & Network</h3>
-          <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-              <strong>Allow Delegation</strong>
-              <label class="toggle-switch">
-                <input type="checkbox" id="settings-allow-delegation">
-                <span class="slider"></span>
-              </label>
+            <div class="card" style="word-break: break-all; margin-bottom: 2rem;">
+              <p id="profile-peer-id">Loading...</p>
             </div>
-            <p class="text-sm" style="color: var(--text-secondary); margin-bottom: 0.5rem;">When enabled:</p>
-            <ul class="text-sm" style="color: var(--text-secondary); margin-left: 1.5rem; margin-bottom: 1rem;">
-              <li>Your device helps others find matches</li>
-              <li>Others can request embedding assistance</li>
-              <li>All results are verified locally</li>
-            </ul>
-            <div style="font-size: var(--font-size-xs); color: var(--text-secondary); border-top: 1px solid var(--border-subtle); padding-top: 0.5rem;">
-              Current Device Tier: <strong id="settings-device-tier">Detecting...</strong>
+
+            <h3>Device & Network</h3>
+            <div class="card" style="margin-bottom: 1rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <strong>Semantic Match Mode</strong>
+                <select id="settings-match-mode" style="width: auto; margin-bottom: 0;">
+                  <option value="monte_carlo">Monte Carlo</option>
+                  <option value="analytic">Analytic</option>
+                </select>
+              </div>
+              <p class="text-sm" style="color: var(--text-secondary); margin-bottom: 0.5rem;">Controls the algorithm used to compute the similarity of distributions. Analytic is faster, Monte Carlo evaluates spread more precisely.</p>
+            </div>
+
+            <div class="card">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <strong>Allow Delegation</strong>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settings-allow-delegation">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <p class="text-sm" style="color: var(--text-secondary); margin-bottom: 0.5rem;">When enabled:</p>
+              <ul class="text-sm" style="color: var(--text-secondary); margin-left: 1.5rem; margin-bottom: 1rem;">
+                <li>Your device helps others find matches</li>
+                <li>Others can request embedding assistance</li>
+                <li>All results are verified locally</li>
+              </ul>
+              <div style="font-size: var(--font-size-xs); color: var(--text-secondary); border-top: 1px solid var(--border-subtle); padding-top: 0.5rem;">
+                Current Device Tier: <strong id="settings-device-tier">Detecting...</strong>
+              </div>
             </div>
           </div>
         </section>
 
-        <!-- Tab 6: Test Match -->
-        <section id="tab-test" class="tab-content">
+        <!-- View: Test Match -->
+        <section id="view-test" class="pane-view">
           <header class="chats-header">
             <h2>Semantic Matcher Test</h2>
           </header>
@@ -187,18 +274,37 @@
         </section>
 
       </main>
+
+      <!-- Right Sidebar: Matches/Roster -->
+      <aside id="sidebar-right" class="sidebar right-sidebar">
+        <div class="sidebar-header">
+          <h2>Nearby Peers</h2>
+        </div>
+        <div class="search-bar" style="padding: 1rem; border-bottom: 1px solid var(--border-subtle);">
+          <input type="text" id="discover-search-input" placeholder="🔍 Filter peers..." style="width: 100%;" />
+        </div>
+        <div class="sidebar-content" style="padding: 0;">
+          <div class="match-list-sections" id="now-match-list">
+            <div id="matches-very-close">
+              <h3 class="section-title">VERY CLOSE (0.85+)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-nearby">
+              <h3 class="section-title">NEARBY (0.70 - 0.85)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-orbiting">
+              <h3 class="section-title">ORBITING (0.55 - 0.70)</h3>
+              <div class="matches-container"></div>
+            </div>
+            <div id="matches-empty" style="padding: 1rem; color: var(--text-secondary); font-size: 0.9rem; display: none;">
+              No peers discovered in this space yet.
+            </div>
+          </div>
+        </div>
+      </aside>
+
     </div>
     <script type="module" src="/src/main.ts"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').then(registration => {
-            console.log('SW registered: ', registration);
-          }).catch(registrationError => {
-            console.log('SW registration failed: ', registrationError);
-          });
-        });
-      }
-    </script>
   </body>
 </html>

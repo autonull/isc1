@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeRelationalDistributions } from '../src/semantic';
+import { computeRelationalDistributions, wordHashFallbackEmbed } from '../src/semantic';
 
 describe('computeRelationalDistributions', () => {
   it('computes only root distribution when no relations exist', async () => {
@@ -8,7 +8,7 @@ describe('computeRelationalDistributions', () => {
       name: 'Test',
       description: 'Distributed systems consensus',
       spread: 0.1
-    });
+    }, async (text) => wordHashFallbackEmbed(text));
 
     expect(dists).toHaveLength(1);
     expect(dists[0].type).toBe('root');
@@ -30,7 +30,7 @@ describe('computeRelationalDistributions', () => {
       ]
     };
 
-    const dists = await computeRelationalDistributions(channel);
+    const dists = await computeRelationalDistributions(channel, async (text) => wordHashFallbackEmbed(text));
     expect(dists).toHaveLength(6); // 1 root + 5 fused
     expect(dists[0].type).toBe('root');
     expect(dists[1].type).toBe('fused');

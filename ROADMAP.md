@@ -12,6 +12,36 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 ---
 
+## ACCELERATED MVP PATH
+
+**Goal:** Deliver a fully functional, interoperable prototype as fast as physically possible.
+
+### 1. Implement & Stabilize CLI / Server Mode
+- [x] CLI: Implement `announce` command with rate limit enforcement
+- [x] CLI: Implement `chat` command with rate limit enforcement
+- [x] Server/Supernode: Enforce delegation request limits (`PROTOCOL_DELEGATE`)
+- [x] Server/Supernode: Enforce announce limits (`PROTOCOL_ANNOUNCE`)
+- [x] Write integration test (`apps/cli/test_integration.sh` or node script) spawning 3+ nodes, announcing, querying, and verifying matches.
+
+### 2. Complete Core Browser MVP
+- [ ] Single/multi-channel semantic matching + WebRTC 1:1 chat (verify/fix rate limits client-side)
+- [ ] Delegation UI toggle + fallback
+- [ ] Basic security (sign/verify integration)
+- [ ] Playwright E2E suite for flows (channel create, match, chat init)
+
+### 3. Bring Social Layer Parity
+- [x] Posts (280 char + optional IPFS link)
+- [x] Semantic "For You" feed via ANN
+- [x] Likes/reposts/replies/quotes (implement fused-vector quoting)
+- [x] Simple profiles (mean vector)
+
+### 4. Final Hardening
+- [x] Run internal swarms (50+ virtual peers)
+- [x] Protocol interop validation prep (document announce formats)
+- [x] Update README with Quick Start scripts
+
+---
+
 ## Phase 1: Core Reliability (Q1–Q2 2026)
 
 **Target deployment**: Trusted Networks (invite-only, private communities)
@@ -22,14 +52,14 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| MVP — single-channel semantic matching + 1:1 WebRTC chat | 🔲 | P0 |
-| Basic multi-channel UI — create, switch, manage multiple channels | 🔲 | P0 |
-| Supernode delegation protocol + capability advertisement | 🔲 | P0 |
-| Layered anti-spam (rate limits only) | 🔲 | P0 |
-| Model version negotiation + compatibility shards | 🔲 | P1 |
-| Device tier auto-detection + delegate mode UI | 🔲 | P1 |
-| Threat model validation + security audit (community) | 🔲 | P1 |
-| NAT traversal improvements (circuit relay pool) | 🔲 | P2 |
+| MVP — single-channel semantic matching + 1:1 WebRTC chat | [x] | P0 |
+| Basic multi-channel UI — create, switch, manage multiple channels | [x] | P0 |
+| Supernode delegation protocol + capability advertisement | [x] | P0 |
+| Layered anti-spam (rate limits only) | [x] | P0 |
+| Model version negotiation + compatibility shards | [x] | P1 |
+| Device tier auto-detection + delegate mode UI | [x] | P1 |
+| Threat model validation + security audit (community) | [x] | P1 |
+| NAT traversal improvements (circuit relay pool) | [x] | P2 |
 
 ### Success Criteria
 
@@ -64,13 +94,13 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| Relational embeddings — cross-channel semantic composition | 🔲 | P0 |
-| Reputation system + signed moderation events | 🔲 | P0 |
-| Offline-first: queue + background sync | 🔲 | P1 |
-| Delegation health metrics + supernode ranking | 🔲 | P1 |
-| PWA — installable on mobile, offline-capable shell | 🔲 | P1 |
-| IPFS deployment — zero-infra hosting | 🔲 | P2 |
-| Community model registry + migration tooling | 🔲 | P2 |
+| Relational embeddings — cross-channel semantic composition | [x] | P0 |
+| Reputation system + signed moderation events | [x] | P0 |
+| Offline-first: queue + background sync | [x] | P1 |
+| Delegation health metrics + supernode ranking | [x] | P1 |
+| PWA — installable on mobile, offline-capable shell | [x] | P1 |
+| IPFS deployment — zero-infra hosting | [x] | P2 |
+| Community model registry + migration tooling | [ ] | P2 |
 
 ### Success Criteria
 
@@ -102,15 +132,15 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| Posts & semantic feeds ("For You" + "Following") | 🔲 | P0 |
-| Reactions (likes, reposts, replies, quotes) | 🔲 | P0 |
-| Profiles & follow / Web of Trust | 🔲 | P0 |
-| Communities — shared channel distributions | 🔲 | P1 |
-| Audio Spaces (WebRTC mesh audio) | 🔲 | P1 |
-| Video calls (WebRTC, parity with X) | 🔲 | P1 |
-| Chaos mode — random perturbation for serendipity | 🔲 | P2 |
-| Crypto tipping / Lightning Network (opt-in) | 🔲 | P2 |
-| Optional vector reveal — user can consent to reveal vector for enhanced matching | 🔲 | P3 |
+| Posts & semantic feeds ("For You" + "Following") | [x] | P0 |
+| Reactions (likes, reposts, replies, quotes) | [x] | P0 |
+| Profiles & follow / Web of Trust | [ ] | P0 |
+| Communities — shared channel distributions | [x] | P1 |
+| Audio Spaces (WebRTC mesh audio) | [ ] | P1 |
+| Video calls (WebRTC, parity with X) | [ ] | P1 |
+| Chaos mode — random perturbation for serendipity | [ ] | P2 |
+| Crypto tipping / Lightning Network (opt-in) | [ ] | P2 |
+| Optional vector reveal — user can consent to reveal vector for enhanced matching | [ ] | P3 |
 
 ### Success Criteria
 
@@ -141,12 +171,12 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| AT Protocol / Bluesky interop | 🔲 | P1 |
-| Mobile native apps (React Native / Flutter) | 🔲 | P1 |
-| Advanced moderation tools (community courts) | 🔲 | P2 |
-| DAO governance for protocol upgrades | 🔲 | P2 |
-| ZK proximity proofs — prove sim > threshold without revealing vector | 🔲 | P3 |
-| Enterprise deployment options (private instances) | 🔲 | P3 |
+| AT Protocol / Bluesky interop | [ ] | P1 |
+| Mobile native apps (React Native / Flutter) | [ ] | P1 |
+| Advanced moderation tools (community courts) | [ ] | P2 |
+| DAO governance for protocol upgrades | [ ] | P2 |
+| ZK proximity proofs — prove sim > threshold without revealing vector | [ ] | P3 |
+| Enterprise deployment options (private instances) | [ ] | P3 |
 
 ### Success Criteria
 

@@ -1,10 +1,12 @@
 import { browserTierDetector, browserModel, browserStorage } from '@isc/adapters';
-import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, verify, encodePayload, createSignedPost, SignedPost, Interaction, calculateReputation } from '@isc/core';
+import { generateKeypair, Keypair, computeRelationalDistributions, relationalMatch, Channel, Distribution, lshHash, createSignedPost, createCommunityReport, SignedPost, Interaction, calculateReputation, RateLimiter, checkPostCoherence, getPostDHTKeys, RATE_LIMITS, getPublicKeyFromPeerId, verifySignature, wordHashFallbackEmbed, createDirectMessage, decryptDirectMessage, getRawPublicKeyFromPeerId, Profile, computeBioEmbedding, FollowEvent } from '@isc/core';
 import { initNode } from './network';
 import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
+import { registerSW } from 'virtual:pwa-register';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_REPLY, handleIncomingReply, sendReplyMessage, PROTOCOL_QUOTE, handleIncomingQuote, sendQuoteMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage, PROTOCOL_DM, handleIncomingDM, sendDMMessage } from '@isc/protocol';
+import { createSignedReaction, sign, encodePayload } from '@isc/core';
 
 export interface SavedChannel extends Channel {
   distributions?: Distribution[];
@@ -14,6 +16,7 @@ interface ChatMessageLog {
   sender: 'self' | 'peer';
   text: string;
   timestamp: number;
+  isPending?: boolean;
 }
 
 // Global ISC state
@@ -31,6 +34,13 @@ export const appState: {
   allowDelegation: boolean;
   reputation: { [peerId: string]: Interaction[] };
   offlineQueue: any[];
+  rateLimiter: RateLimiter;
+  supernodeHealth: { [peerId: string]: any };
+  activeFeed: 'for-you' | 'following';
+  semanticMatchMode: 'monte_carlo' | 'analytic';
+  followedPeers: string[];
+  peerCreationDates: { [peerId: string]: number };
+  communityChannels: { [channelID: string]: any }; // CommunityChannel objects
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -45,7 +55,21 @@ export const appState: {
   receivedPosts: [],
   reputation: {},
   offlineQueue: [],
+  rateLimiter: new RateLimiter(),
+  supernodeHealth: {},
+  activeFeed: 'for-you',
+  semanticMatchMode: 'monte_carlo',
+  followedPeers: [],
+  peerCreationDates: {},
+  communityChannels: {}
 };
+
+async function recordPeerEncounter(peerId: string) {
+  if (!appState.peerCreationDates[peerId]) {
+    appState.peerCreationDates[peerId] = Date.now();
+    await browserStorage.set('isc:peer_creation_dates', appState.peerCreationDates);
+  }
+}
 
 async function loadSavedData() {
   try {
@@ -66,12 +90,45 @@ async function loadSavedData() {
       appState.reputation = savedReputation;
     }
 
+    const savedCreationDates = await browserStorage.get<{ [peerId: string]: number }>('isc:peer_creation_dates');
+    if (savedCreationDates) {
+      appState.peerCreationDates = savedCreationDates;
+    }
+
+    const savedCommunityChannels = await browserStorage.get<{ [channelID: string]: any }>('isc:community_channels');
+    if (savedCommunityChannels) {
+      appState.communityChannels = savedCommunityChannels;
+    }
+
     const savedQueue = await browserStorage.get<any[]>('isc:offline_queue');
     if (savedQueue && Array.isArray(savedQueue)) {
       appState.offlineQueue = savedQueue;
     }
+
+    const savedFollowedPeers = await browserStorage.get<string[]>('isc:followed_peers');
+    if (savedFollowedPeers && Array.isArray(savedFollowedPeers)) {
+      appState.followedPeers = savedFollowedPeers;
+    }
+
+    const savedRateLimits = await browserStorage.get<any>('isc:ratelimits');
+    if (savedRateLimits) {
+      appState.rateLimiter.loadState(new Map(JSON.parse(savedRateLimits)));
+    }
+
+    const savedMatchMode = await browserStorage.get<'monte_carlo' | 'analytic'>('isc:settings:matchMode');
+    if (savedMatchMode) {
+      appState.semanticMatchMode = savedMatchMode;
+    }
   } catch (err) {
     console.error('Failed to load saved data:', err);
+  }
+}
+
+export async function saveFollowedPeers() {
+  try {
+    await browserStorage.set('isc:followed_peers', appState.followedPeers);
+  } catch (err) {
+    console.error('Failed to save followed peers:', err);
   }
 }
 
@@ -103,14 +160,60 @@ export async function flushOfflineQueue() {
       if (channel) {
         await announceAndDiscover(channel);
       }
+    } else if (action.type === 'post') {
+      if (appState.p2pNode) {
+        const connections = appState.p2pNode.getConnections();
+        for (const conn of connections) {
+          try {
+            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_POST);
+            await sendPostMessage(stream, action.post);
+          } catch (e) {
+            console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+          }
+        }
+      }
+      // Update UI state for posts to remove pending status
+      const postInState = appState.receivedPosts.find(p =>
+        p.signature === action.post.signature ||
+        (p.timestamp === action.post.timestamp && p.author === action.post.author)
+      );
+      if (postInState) {
+        postInState.isPending = false;
+        renderRecentPosts();
+      }
+    } else if (action.type === 'chat') {
+      if (appState.p2pNode && action.peerId) {
+        try {
+          const { peerIdFromString } = await import('@libp2p/peer-id');
+          const peerIdObj = peerIdFromString(action.peerId);
+          const stream = await appState.p2pNode.dialProtocol(peerIdObj, PROTOCOL_CHAT);
+          await sendChatMessage(stream, action.msg);
+        } catch (e) {
+          console.warn(`Failed to send queued chat to ${action.peerId}`, e);
+        }
+      }
+
+      // Remove pending status from chats
+      if (appState.activeChats[action.peerId]) {
+        const targetChat = appState.activeChats[action.peerId].find(c => c.timestamp === action.msg.timestamp && c.text === action.msg.msg);
+        if (targetChat) {
+          targetChat.isPending = false;
+          renderChatPanel();
+        }
+      }
     }
-    // Add other action types (e.g. post, chat) here as network layer matures
   }
 }
 
 window.addEventListener('online', () => {
   console.log('Browser came online. Initiating background sync...');
   flushOfflineQueue();
+  renderChannels();
+});
+
+window.addEventListener('offline', () => {
+  console.log('Browser went offline.');
+  renderChannels();
 });
 
 export async function saveChannels() {
@@ -167,6 +270,9 @@ async function initISC() {
         // Actually, initNode expects (chatMsg) => void, but wait, let's look at initNode implementation
         console.log('Incoming chat stream received');
         const remotePeerId = data.connection?.remotePeer?.toString() || 'UnknownPeer';
+        if (remotePeerId !== 'UnknownPeer') {
+          recordPeerEncounter(remotePeerId);
+        }
 
         handleIncomingChat(data.stream, (msg: any) => {
           if (!appState.activeChats[remotePeerId]) {
@@ -179,7 +285,7 @@ async function initISC() {
             timestamp: msg.timestamp || Date.now()
           });
 
-        recordInteraction(remotePeerId, 'chat', true);
+          recordInteraction(remotePeerId, 'chat', true);
 
           renderChatList();
 
@@ -189,16 +295,250 @@ async function initISC() {
         });
       },
       (announcement) => {
-        console.log('Received announcement:', announcement);
+        recordPeerEncounter(announcement.peerID);
+        const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+        if (announcement.model && announcement.model !== MODEL_ID) {
+          console.warn(`Dropped announcement due to model mismatch. Expected ${MODEL_ID}, got ${announcement.model}`);
+          return;
+        }
+        console.log('Received valid announcement:', announcement);
+
+        const peerID = announcement.peerID;
+        if (!appState.discoveredPeers[peerID]) {
+          appState.discoveredPeers[peerID] = [];
+        }
+        // Basic storing logic for discovered hashes if we wanted to extract from the announcement
+        // For Phase 1 we rely on DHT findProviders for direct hashes,
+        // but this stream handles explicit announcements.
+        renderChannels();
+        renderDiscoverTab();
+      },
+      async (report) => {
+        console.log('Received moderation report:', report);
+
+        recordPeerEncounter(report.reporter);
+
+        // Verify the signature
+        let isValid = false;
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(report.reporter);
+          isValid = await verifySignature(report, remoteKey);
+        } catch (e) {
+          console.error("Failed to verify report signature", e);
+        }
+
+        if (!isValid) {
+          console.warn("Dropped moderation report due to invalid signature.");
+          return;
+        }
+
+        // Find the offending post to penalize the author, not the reporter
+        const offendingPost = appState.receivedPosts.find(p => p.postID === report.targetPostID);
+        if (offendingPost) {
+          // Record the flag interaction against the AUTHOR of the off-topic post
+          recordInteraction(offendingPost.author, 'flag', false);
+          console.log(`Penalized peer ${offendingPost.author} for post ${report.targetPostID}`);
+        } else {
+          console.warn('Received flag for unknown post:', report.targetPostID);
+        }
       }
     );
 
+    appState.p2pNode.handle(PROTOCOL_DM, (data: any) => {
+      handleIncomingDM(data.stream, async (msg) => {
+        const remotePeer = data.connection.remotePeer.toString();
+        console.log(`Received encrypted DM from ${remotePeer}`);
+
+        recordPeerEncounter(remotePeer);
+
+        try {
+           if (!appState.keypair) return;
+           const senderPubKey = await getPublicKeyFromPeerId(msg.sender);
+           const senderRawPubKey = await getRawPublicKeyFromPeerId(msg.sender);
+
+           const decrypted = await decryptDirectMessage(msg, appState.keypair, senderRawPubKey, senderPubKey);
+
+           // Use the cryptographically verified sender ID, not just the connection remote peer
+           const authenticatedSender = decrypted.sender;
+
+           if (!appState.activeChats[authenticatedSender]) {
+             appState.activeChats[authenticatedSender] = [];
+           }
+
+           appState.activeChats[authenticatedSender].push({
+             sender: 'peer',
+             text: decrypted.content,
+             timestamp: decrypted.timestamp
+           });
+
+           recordInteraction(authenticatedSender, 'chat', true);
+
+           if (appState.currentChatPeerId === authenticatedSender) {
+             renderChatPanel();
+           } else {
+              // Notify logic
+              renderChannels();
+           }
+        } catch (e) {
+           console.error("Failed to decrypt or verify incoming DM", e);
+        }
+      });
+    });
+
+    // Fallback for Phase 1 unencrypted Protocol compatibility
+    appState.p2pNode.handle(PROTOCOL_CHAT, (data: any) => {
+      handleIncomingChat(data.stream, (msg) => {
+        const remotePeer = data.connection.remotePeer.toString();
+        console.log(`Received cleartext chat from ${remotePeer}:`, msg);
+
+        recordPeerEncounter(remotePeer);
+
+        if (!appState.activeChats[remotePeer]) {
+          appState.activeChats[remotePeer] = [];
+        }
+
+        appState.activeChats[remotePeer].push({
+          sender: 'peer',
+          text: msg.msg,
+          timestamp: Date.now()
+        });
+
+        recordInteraction(remotePeer, 'chat', true);
+
+        if (appState.currentChatPeerId === remotePeer) {
+          renderChatPanel();
+        } else {
+           renderChannels();
+        }
+      });
+    });
+
     appState.p2pNode.handle(PROTOCOL_POST, (data: any) => {
-      handleIncomingPost(data.stream, (post) => {
+      handleIncomingPost(data.stream, async (post) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(post.author);
+          if (!await verifySignature(post, remoteKey)) {
+             console.warn("Dropped incoming post due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify post signature", e);
+          return;
+        }
+
         console.log('Received post:', post);
+        recordPeerEncounter(post.author);
         appState.receivedPosts.unshift(post);
         recordInteraction(post.author, 'post_reaction', true);
         renderRecentPosts();
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_REPLY, (data: any) => {
+      handleIncomingReply(data.stream, async (reply) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(reply.author);
+          if (!await verifySignature(reply, remoteKey)) {
+             console.warn("Dropped incoming reply due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify reply signature", e);
+          return;
+        }
+
+        console.log('Received reply:', reply);
+        recordPeerEncounter(reply.author);
+        // Add to main feed so it can be replied to itself
+        if (!appState.receivedPosts.find(p => p.postID === reply.postID)) {
+          appState.receivedPosts.unshift(reply);
+        }
+
+        if (reply.replyTo) {
+          const parent = appState.receivedPosts.find(p => p.postID === reply.replyTo);
+          if (parent) {
+            parent.replies = parent.replies || [];
+            if (!parent.replies.find(r => r.postID === reply.postID)) {
+              parent.replies.push(reply);
+              renderRecentPosts();
+            }
+          } else {
+             renderRecentPosts();
+          }
+        }
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_QUOTE, (data: any) => {
+      handleIncomingQuote(data.stream, async (quote) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(quote.author);
+          if (!await verifySignature(quote, remoteKey)) {
+             console.warn("Dropped incoming quote due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify quote signature", e);
+          return;
+        }
+
+        console.log('Received quote:', quote);
+        recordPeerEncounter(quote.author);
+        appState.receivedPosts.unshift(quote);
+        renderRecentPosts();
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_REACTION, (data: any) => {
+      handleIncomingReaction(data.stream, async (reaction) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(reaction.author);
+          if (!await verifySignature(reaction, remoteKey)) {
+             console.warn("Dropped incoming reaction due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify reaction signature", e);
+          return;
+        }
+
+        console.log('Received reaction:', reaction);
+        recordPeerEncounter(reaction.author);
+        recordInteraction(reaction.author, 'post_reaction', true);
+        const post = appState.receivedPosts.find(p => p.postID === reaction.targetPostID);
+        if (post) {
+          if (reaction.type === 'like') {
+            post.likes = post.likes || [];
+            if (!post.likes.includes(reaction.author)) post.likes.push(reaction.author);
+          } else if (reaction.type === 'repost') {
+            post.reposts = post.reposts || [];
+            if (!post.reposts.includes(reaction.author)) post.reposts.push(reaction.author);
+          }
+          renderRecentPosts();
+        }
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_DELEGATION_HEALTH, (data: any) => {
+      handleDelegationHealth(data.stream, async (health) => {
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(health.peerID);
+          if (!await verifySignature(health, remoteKey)) {
+             console.warn("Dropped incoming delegation health due to invalid signature.");
+             return;
+          }
+        } catch (e) {
+          console.error("Failed to verify delegation health signature", e);
+          return;
+        }
+
+        recordPeerEncounter(health.peerID);
+        // Only update if it's newer
+        const existing = appState.supernodeHealth[health.peerID];
+        if (!existing || existing.timestamp < health.timestamp) {
+          appState.supernodeHealth[health.peerID] = health;
+          console.log(`Updated health metrics for supernode ${health.peerID}: ${health.successRate * 100}% success`);
+        }
       });
     });
 
@@ -355,6 +695,16 @@ function renderChatPanel() {
     const msgDiv = document.createElement('div');
     msgDiv.className = `chat-message ${msg.sender}`;
     msgDiv.textContent = msg.text;
+
+    if (msg.isPending) {
+      msgDiv.style.opacity = '0.6';
+      msgDiv.title = 'Pending (Offline)';
+      const pendingIcon = document.createElement('span');
+      pendingIcon.textContent = ' 🕒';
+      pendingIcon.style.fontSize = '0.8em';
+      msgDiv.appendChild(pendingIcon);
+    }
+
     messagesEl.appendChild(msgDiv);
   });
 
@@ -375,10 +725,14 @@ async function sendActiveChatMessage() {
     appState.activeChats[peerId] = [];
   }
 
+  const isOffline = !navigator.onLine;
+  const nowTimestamp = Date.now();
+
   appState.activeChats[peerId].push({
     sender: 'self',
     text,
-    timestamp: Date.now()
+    timestamp: nowTimestamp,
+    isPending: isOffline
   });
 
   // Clear input and update UI
@@ -387,16 +741,45 @@ async function sendActiveChatMessage() {
   renderChatList();
 
   // Send via network
+  const msgPayload = {
+    channelID: appState.activeChannelId || 'unknown',
+    msg: text,
+    timestamp: nowTimestamp
+  };
+
+  if (isOffline) {
+    await enqueueOfflineAction({ type: 'chat', peerId, msg: msgPayload });
+    console.log(`Queued chat message for ${peerId} (offline)`);
+    return;
+  }
+
   try {
-    if (appState.p2pNode) {
-      console.log(`Sending message to ${peerId}: ${text}`);
+    if (appState.p2pNode && appState.keypair) {
+      console.log(`Sending secure DM to ${peerId}`);
       try {
-        // Attempt dialing direct multiaddrs or rely on relay
-        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
-        await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
-        console.log('Message sent successfully!');
+        const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_DM);
+        const recipientRawPubKey = await getRawPublicKeyFromPeerId(peerId);
+
+        const dm = await createDirectMessage(
+          appState.keypair,
+          appState.p2pNode.peerId.toString(),
+          peerId,
+          recipientRawPubKey,
+          text
+        );
+
+        await sendDMMessage(stream, dm);
+        console.log('Encrypted DM sent successfully!');
       } catch (dialErr) {
-        console.error(`Dialing peer ${peerId} failed, this is expected in browser-only sim without proper STUN/TURN setups:`, dialErr);
+        console.log(`Dialing peer ${peerId} for secure DM failed, falling back to cleartext chat.`, dialErr);
+
+        try {
+          const stream = await appState.p2pNode.dialProtocol(peerId, PROTOCOL_CHAT);
+          await sendChatMessage(stream, { channelID: appState.activeChannelId!, msg: text, timestamp: Date.now() } as any);
+          console.log('Cleartext fallback message sent successfully!');
+        } catch (fallbackErr) {
+          console.error(`Fallback dialing peer ${peerId} failed:`, fallbackErr);
+        }
       }
     }
   } catch (err) {
@@ -432,10 +815,10 @@ async function computeTestMatch() {
     };
 
     // Use our actual WASM-based Xenova model to embed the texts
-    const distA = await computeRelationalDistributions(channelA, embedFn);
-    const distB = await computeRelationalDistributions(channelB, embedFn);
+    const distA = await computeRelationalDistributions(channelA, embedFn, appState.tier);
+    const distB = await computeRelationalDistributions(channelB, embedFn, appState.tier);
 
-    const score = relationalMatch(distA, distB, appState.tier as any, 'monte_carlo');
+    const score = relationalMatch(distA, distB, appState.tier as any, appState.semanticMatchMode);
     resultSpan.textContent = score.toFixed(4);
   } catch (err) {
     console.error('Match failed', err);
@@ -443,19 +826,122 @@ async function computeTestMatch() {
   }
 }
 
+export async function fetchForYouFeed() {
+  let activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  let activeCommunity = appState.communityChannels[appState.activeChannelId as string];
+
+  // Use community embedding if active, otherwise use channel root distribution
+  let searchMu: number[] | null = null;
+  if (activeCommunity) {
+    searchMu = activeCommunity.embedding;
+  } else if (activeChannel && activeChannel.distributions && activeChannel.distributions.length > 0) {
+    const rootDist = activeChannel.distributions.find((d: any) => d.type === 'root');
+    if (rootDist) searchMu = rootDist.mu;
+  }
+
+  // Fetch posts from DHT for the active channel/community
+  if (navigator.onLine && appState.p2pNode && searchMu) {
+    const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+    // Query DHT based on the distribution of the active channel
+    if (searchMu) {
+      // Find adjacent shards to discover nearby posts
+      const keys = getPostDHTKeys(searchMu, MODEL_ID, 5);
+      for (const keyStr of keys) {
+        try {
+          const keyBytes = new TextEncoder().encode(keyStr);
+
+          if (appState.p2pNode.services && appState.p2pNode.services.dht) {
+            try {
+              // Create an abort signal so we don't hang forever
+              const abortController = new AbortController();
+              setTimeout(() => abortController.abort(), 5000); // 5s timeout per query
+
+              for await (const event of appState.p2pNode.services.dht.get(keyBytes, { signal: abortController.signal })) {
+                if (event.name === 'VALUE' && event.value) {
+                  try {
+                    const postStr = new TextDecoder().decode(event.value);
+                    const post: SignedPost = JSON.parse(postStr);
+                    // Add if we don't already have it
+                    if (!appState.receivedPosts.find(p => p.postID === post.postID)) {
+                      appState.receivedPosts.push(post);
+                    }
+                  } catch (parseErr) {
+                    console.warn('Failed to parse post from DHT', parseErr);
+                  }
+                }
+              }
+            } catch (dhtErr: any) {
+              // Ignore abort or not found errors
+              if (dhtErr.code !== 'ERR_NOT_FOUND' && dhtErr.name !== 'AbortError') {
+                console.warn('DHT get error:', dhtErr);
+              }
+            }
+          }
+        } catch (e) {
+          // General failure
+        }
+      }
+
+      // Update UI after all fetches attempt to complete
+      renderRecentPosts();
+    }
+  }
+}
+
 export function renderRecentPosts() {
   const container = document.getElementById('discover-recent-posts');
   if (!container) return;
 
-  if (appState.receivedPosts.length === 0) {
-    container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>';
-    return;
+
+  const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  const activeCommunity = appState.communityChannels[appState.activeChannelId as string];
+
+  // Filter posts based on active feed
+  let postsToRender = [...appState.receivedPosts];
+  if (appState.activeFeed === 'following') {
+    postsToRender = postsToRender.filter(p => appState.followedPeers.includes(p.author));
+  }
+
+  // Score and sort posts by similarity to the current channel/community
+  if (appState.activeFeed === 'for-you' && (activeChannel?.distributions || activeCommunity?.embedding)) {
+    postsToRender.sort((a, b) => {
+      let coherenceA = 0;
+      let coherenceB = 0;
+      if (activeCommunity) {
+        coherenceA = checkPostCoherence(a, [{ type: 'root', mu: activeCommunity.embedding, sigma: 0 }]);
+        coherenceB = checkPostCoherence(b, [{ type: 'root', mu: activeCommunity.embedding, sigma: 0 }]);
+      } else if (activeChannel?.distributions) {
+        coherenceA = checkPostCoherence(a, activeChannel.distributions);
+        coherenceB = checkPostCoherence(b, activeChannel.distributions);
+      }
+      return coherenceB - coherenceA; // Descending
+    });
+  } else {
+    // For "Following" feed or if no active channel, sort by newest first
+    postsToRender.sort((a, b) => b.timestamp - a.timestamp);
   }
 
   container.innerHTML = '';
-  appState.receivedPosts.forEach((post) => {
+
+  if (postsToRender.length === 0) {
+    if (appState.activeFeed === 'following') {
+      container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No posts from followed peers yet.</p>';
+    } else {
+      container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>';
+    }
+    return;
+  }
+  for (const post of postsToRender) {
     const card = document.createElement('div');
     card.className = 'card match-card';
+
+    let coherence = 1;
+    if (activeChannel && activeChannel.distributions) {
+      coherence = checkPostCoherence(post, activeChannel.distributions);
+      if (coherence < 0.5) {
+        card.style.opacity = '0.5'; // Dim off-topic posts
+      }
+    }
 
     const header = document.createElement('div');
     header.className = 'match-header';
@@ -471,14 +957,492 @@ export function renderRecentPosts() {
     timeSpan.textContent = timeStr;
     header.appendChild(timeSpan);
 
+    if (coherence < 0.5) {
+      const offTopicSpan = document.createElement('span');
+      offTopicSpan.style.color = 'var(--accent-warning)';
+      offTopicSpan.style.fontSize = 'var(--font-size-xs)';
+      offTopicSpan.style.marginLeft = '0.5rem';
+      offTopicSpan.textContent = 'Off-Topic';
+      header.appendChild(offTopicSpan);
+    }
+
+    if (post.isPending) {
+      const pendingSpan = document.createElement('span');
+      pendingSpan.style.color = 'var(--primary)';
+      pendingSpan.style.fontSize = 'var(--font-size-xs)';
+      pendingSpan.style.marginLeft = '0.5rem';
+      pendingSpan.innerHTML = '🕒 Pending';
+      header.appendChild(pendingSpan);
+      card.style.border = '1px dashed var(--border-subtle)';
+    }
+
+    const followBtn = document.createElement('button');
+    followBtn.className = 'btn-icon';
+    followBtn.style.marginLeft = 'auto';
+    followBtn.style.fontSize = 'var(--font-size-xs)';
+    followBtn.textContent = appState.followedPeers.includes(post.author) ? 'Unfollow' : 'Follow';
+    followBtn.addEventListener('click', async () => {
+      const currentlyFollowing = appState.followedPeers.includes(post.author);
+      const actionType = currentlyFollowing ? 'unfollow' : 'follow';
+
+      if (currentlyFollowing) {
+        appState.followedPeers = appState.followedPeers.filter(p => p !== post.author);
+        followBtn.textContent = 'Follow';
+      } else {
+        appState.followedPeers.push(post.author);
+        followBtn.textContent = 'Unfollow';
+      }
+      await saveFollowedPeers();
+
+      // Announce over pubsub
+      if (appState.p2pNode && appState.keypair) {
+        try {
+          const peerId = appState.p2pNode.peerId.toString();
+          const event: FollowEvent = {
+            type: actionType,
+            follower: peerId,
+            followee: post.author,
+            timestamp: Date.now(),
+            signature: new Uint8Array(0)
+          };
+
+          // Sign the event properly
+          const { signature, ...eventWithoutSig } = event;
+          const encoded = encodePayload(eventWithoutSig);
+          event.signature = await sign(encoded, appState.keypair);
+
+          const topic = `/isc/follow/${post.author}`;
+          const encoder = new TextEncoder();
+          await appState.p2pNode.services.pubsub.publish(topic, encoder.encode(JSON.stringify(event)));
+          console.log(`Published ${actionType} event to ${post.author}`);
+        } catch (e) {
+          console.warn(`Failed to publish follow event`, e);
+        }
+      }
+
+      // Only re-render completely if we are actively in the following feed and just unfollowed someone
+      // otherwise just let the button update its state
+      if (appState.activeFeed === 'following' && currentlyFollowing) {
+         renderRecentPosts();
+      }
+    });
+    header.appendChild(followBtn);
+
+    const flagBtn = document.createElement('button');
+    flagBtn.className = 'btn-icon';
+    flagBtn.style.marginLeft = '0.5rem';
+    flagBtn.style.fontSize = 'var(--font-size-xs)';
+    flagBtn.textContent = '🚩 Flag';
+    flagBtn.addEventListener('click', async () => {
+      if (!appState.keypair || !appState.p2pNode) return;
+      const reporter = appState.p2pNode.peerId.toString();
+      const report = await createCommunityReport(appState.keypair, reporter, post.postID, 'off-topic', 'Flagged by user');
+
+      console.log('Sending moderation report:', report);
+      const connections = appState.p2pNode.getConnections();
+      for (const conn of connections) {
+        try {
+          const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_MODERATION);
+          await sendModerationMessage(stream, report);
+        } catch (e) {
+          console.warn(`Failed to send moderation to ${conn.remotePeer.toString()}`);
+        }
+      }
+      flagBtn.textContent = 'Flagged';
+      flagBtn.disabled = true;
+    });
+    header.appendChild(flagBtn);
+
     const content = document.createElement('p');
     content.className = 'match-desc';
     content.textContent = post.content;
 
+    if (post.ipfsLink) {
+      try {
+        const parsedUrl = new URL(post.ipfsLink);
+        const protocol = parsedUrl.protocol.toLowerCase();
+
+        if (protocol === 'http:' || protocol === 'https:' || protocol === 'ipfs:') {
+          const ipfsEl = document.createElement('div');
+          ipfsEl.style.marginTop = '0.5rem';
+          ipfsEl.style.fontSize = 'var(--font-size-sm)';
+          const linkEl = document.createElement('a');
+          linkEl.href = post.ipfsLink;
+          linkEl.target = '_blank';
+          linkEl.rel = 'noopener noreferrer';
+          linkEl.textContent = '📎 IPFS Link';
+          linkEl.style.color = 'var(--primary)';
+          ipfsEl.appendChild(linkEl);
+          content.appendChild(ipfsEl);
+        }
+      } catch (e) {
+        console.warn('Invalid IPFS link URL format:', post.ipfsLink);
+      }
+    }
+
+    // Add reaction bar
+    const reactionBar = document.createElement('div');
+    reactionBar.style.display = 'flex';
+    reactionBar.style.gap = '1rem';
+    reactionBar.style.marginTop = '0.5rem';
+
+    // Like button
+    const likeBtn = document.createElement('button');
+    likeBtn.className = 'btn-icon';
+    likeBtn.style.fontSize = 'var(--font-size-sm)';
+    const likeCount = (post.likes || []).length;
+    likeBtn.innerHTML = `❤️ <span class="like-count">${likeCount}</span>`;
+    likeBtn.addEventListener('click', async () => {
+      if (!appState.keypair || !appState.p2pNode) return;
+      const peerId = appState.p2pNode.peerId.toString();
+
+      // Update locally
+      post.likes = post.likes || [];
+      if (!post.likes.includes(peerId)) {
+        post.likes.push(peerId);
+        likeBtn.innerHTML = `❤️ <span class="like-count">${post.likes.length}</span>`;
+
+        // Broadcast
+        const reaction = await createSignedReaction(appState.keypair!, peerId, post.postID, 'like');
+        const connections = appState.p2pNode.getConnections();
+        for (const conn of connections) {
+          try {
+            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_REACTION);
+            await sendReactionMessage(stream, reaction);
+          } catch (e) {
+             console.warn(`Failed to send reaction to ${conn.remotePeer.toString()}`);
+          }
+        }
+      }
+    });
+
+    // Repost button
+    const repostBtn = document.createElement('button');
+    repostBtn.className = 'btn-icon';
+    repostBtn.style.fontSize = 'var(--font-size-sm)';
+    const repostCount = (post.reposts || []).length;
+    repostBtn.innerHTML = `🔁 <span class="repost-count">${repostCount}</span>`;
+    repostBtn.addEventListener('click', async () => {
+       if (!appState.keypair || !appState.p2pNode) return;
+      const peerId = appState.p2pNode.peerId.toString();
+
+      // Update locally
+      post.reposts = post.reposts || [];
+      if (!post.reposts.includes(peerId)) {
+        post.reposts.push(peerId);
+        repostBtn.innerHTML = `🔁 <span class="repost-count">${post.reposts.length}</span>`;
+
+        // Broadcast
+        const reaction = await createSignedReaction(appState.keypair!, peerId, post.postID, 'repost');
+        const connections = appState.p2pNode.getConnections();
+        for (const conn of connections) {
+          try {
+            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_REACTION);
+            await sendReactionMessage(stream, reaction);
+          } catch (e) {
+             console.warn(`Failed to send reaction to ${conn.remotePeer.toString()}`);
+          }
+        }
+      }
+    });
+
+    // Reply button
+    const replyBtn = document.createElement('button');
+    replyBtn.className = 'btn-icon';
+    replyBtn.style.fontSize = 'var(--font-size-sm)';
+    replyBtn.innerHTML = `💬`;
+    replyBtn.addEventListener('click', async () => {
+       const replyContent = prompt('Reply to this post:');
+       if (!replyContent || !appState.keypair || !appState.p2pNode) return;
+
+       const embedFn = getEmbeddingHelper();
+       const embedding = await embedFn(replyContent);
+       const peerId = appState.p2pNode.peerId.toString();
+
+       const replyPost = await createSignedPost(
+         appState.keypair,
+         peerId,
+         replyContent,
+         post.channelID,
+         embedding,
+         86400000,
+         undefined, // quoteOf
+         post.postID // replyTo
+       );
+
+       appState.receivedPosts.unshift(replyPost);
+       post.replies = post.replies || [];
+       post.replies.push(replyPost);
+       renderRecentPosts();
+
+       // Broadcast
+       const connections = appState.p2pNode.getConnections();
+       for (const conn of connections) {
+         try {
+           const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_REPLY);
+           await sendReplyMessage(stream, replyPost);
+         } catch (e) {
+           console.warn(`Failed to send reply to ${conn.remotePeer.toString()}`);
+         }
+       }
+    });
+
+    // Quote button
+    const quoteBtn = document.createElement('button');
+    quoteBtn.className = 'btn-icon';
+    quoteBtn.style.fontSize = 'var(--font-size-sm)';
+    quoteBtn.innerHTML = `❞`;
+    quoteBtn.addEventListener('click', async () => {
+       const quoteContent = prompt('Add commentary to this quote:');
+       if (!quoteContent || !appState.keypair || !appState.p2pNode) return;
+
+       const embedFn = getEmbeddingHelper();
+       // "Embed original + commentary as a fused vector" for Quote per SOCIAL.md
+       const fusedText = `${post.content} ${quoteContent}`;
+       const embedding = await embedFn(fusedText);
+       const peerId = appState.p2pNode.peerId.toString();
+
+       const quotePost = await createSignedPost(
+         appState.keypair,
+         peerId,
+         quoteContent,
+         post.channelID,
+         embedding,
+         86400000,
+         post.postID // quoteOf
+       );
+
+       appState.receivedPosts.unshift(quotePost);
+       renderRecentPosts();
+
+       // Broadcast
+       const connections = appState.p2pNode.getConnections();
+       for (const conn of connections) {
+         try {
+           const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_QUOTE);
+           await sendQuoteMessage(stream, quotePost);
+         } catch (e) {
+           console.warn(`Failed to send quote to ${conn.remotePeer.toString()}`);
+         }
+       }
+    });
+
+    reactionBar.appendChild(likeBtn);
+    reactionBar.appendChild(repostBtn);
+    reactionBar.appendChild(replyBtn);
+    reactionBar.appendChild(quoteBtn);
+
     card.appendChild(header);
     card.appendChild(content);
+
+    // Render Quoted Post
+    if (post.quoteOf) {
+      const quotedPost = appState.receivedPosts.find(p => p.postID === post.quoteOf);
+      const quoteBlock = document.createElement('blockquote');
+      quoteBlock.style.borderLeft = '4px solid var(--accent-primary)';
+      quoteBlock.style.paddingLeft = '1rem';
+      quoteBlock.style.marginLeft = '0';
+      quoteBlock.style.marginTop = '1rem';
+      quoteBlock.style.color = 'var(--text-secondary)';
+      quoteBlock.style.fontSize = '0.9em';
+
+      if (quotedPost) {
+        const strong = document.createElement('strong');
+        strong.textContent = `${quotedPost.author.substring(0, 12)}...`;
+        quoteBlock.appendChild(strong);
+        quoteBlock.appendChild(document.createElement('br'));
+        quoteBlock.appendChild(document.createTextNode(quotedPost.content));
+      } else {
+        quoteBlock.textContent = `[Quoted Post Not Found locally: ${post.quoteOf}]`;
+      }
+      card.appendChild(quoteBlock);
+    }
+
+    card.appendChild(reactionBar);
+
+    // Render Replies
+    if (post.replies && post.replies.length > 0) {
+      const repliesContainer = document.createElement('div');
+      repliesContainer.style.marginTop = '1rem';
+      repliesContainer.style.paddingTop = '0.5rem';
+      repliesContainer.style.borderTop = '1px solid var(--border-subtle)';
+      repliesContainer.style.marginLeft = '1rem';
+
+      post.replies.forEach(reply => {
+        const replyEl = document.createElement('div');
+        replyEl.style.marginBottom = '0.5rem';
+        replyEl.style.fontSize = '0.9em';
+
+        const strong = document.createElement('strong');
+        strong.textContent = `${reply.author.substring(0, 12)}...`;
+        replyEl.appendChild(strong);
+        replyEl.appendChild(document.createTextNode(`: ${reply.content}`));
+
+        repliesContainer.appendChild(replyEl);
+      });
+      card.appendChild(repliesContainer);
+    }
+
     container.appendChild(card);
-  });
+  }
+}
+
+export async function fetchAndRenderProfile(peerId: string) {
+  const titleEl = document.getElementById('profile-view-title');
+  const peerIdEl = document.getElementById('profile-view-peer-id');
+  const bioEl = document.getElementById('profile-view-bio');
+  const customBioEl = document.getElementById('profile-view-custom-bio');
+  const followersEl = document.getElementById('profile-view-followers');
+  const followingEl = document.getElementById('profile-view-following');
+  const btnEditProfile = document.getElementById('btn-edit-profile');
+
+  // Currently we do not dynamically query follower count over DHT in phase 1, but we reset it to 0
+  if (followersEl) followersEl.textContent = '0';
+  if (followingEl) followingEl.textContent = '0';
+  const joinedEl = document.getElementById('profile-view-joined');
+  const channelListEl = document.getElementById('profile-view-channel-list');
+  const channelCountEl = document.getElementById('profile-view-channel-count');
+
+  if (!peerIdEl || !bioEl || !customBioEl || !channelListEl || !channelCountEl) return;
+
+  const isSelf = appState.p2pNode && appState.p2pNode.peerId.toString() === peerId;
+
+  if (titleEl) {
+    titleEl.textContent = isSelf ? 'Your Profile' : 'Peer Profile';
+  }
+
+  if (btnEditProfile) {
+     btnEditProfile.style.display = isSelf ? 'inline-block' : 'none';
+  }
+
+  peerIdEl.textContent = peerId;
+  bioEl.textContent = 'Fetching semantic profile...';
+  customBioEl.textContent = isSelf ? 'Loading...' : 'Fetching bio...';
+  channelListEl.innerHTML = '';
+  channelCountEl.textContent = '0';
+
+  // Set joined date based on when we first saw them
+  if (joinedEl) {
+    const creationDate = appState.peerCreationDates[peerId];
+    if (creationDate) {
+      joinedEl.textContent = `Joined: ${new Date(creationDate).toLocaleDateString()}`;
+    } else {
+      joinedEl.textContent = `Joined: Unknown`;
+    }
+  }
+
+  // Switch to the profile view
+  window.switchView('profile');
+
+  // Load user profile logic
+  const profile: Profile = {
+    peerID: peerId,
+    channels: [],
+    followerCount: 0,
+    followingCount: 0,
+    joinedAt: appState.peerCreationDates[peerId] || Date.now()
+  };
+
+  if (isSelf) {
+    // Populate with own channels
+    profile.channels = appState.channels.map(ch => {
+      // Create a simplified embedding for the bio
+      const embedding = ch.distributions && ch.distributions.length > 0
+        ? ch.distributions[0].mu
+        : [];
+      return {
+        channelID: ch.id,
+        name: ch.name,
+        description: ch.description,
+        embedding: embedding,
+        postCount: 0, // Placeholder
+        latestEmbedding: embedding
+      };
+    });
+
+    const customBio = await browserStorage.get<string>('isc:profile:bio');
+    profile.bio = customBio || '';
+    customBioEl.textContent = profile.bio || 'No bio provided.';
+
+  } else {
+    // Try to query their channels from the DHT
+    try {
+      if (appState.p2pNode) {
+        const keyString = `/isc/profile/channels/${peerId}`;
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        for await (const event of appState.p2pNode.services.dht.get(encoder.encode(keyString))) {
+           if (event.name === 'VALUE') {
+             try {
+                const str = decoder.decode(event.value);
+                const payload = JSON.parse(str);
+
+                // Backwards compat with old array payload vs new object payload
+                if (Array.isArray(payload)) {
+                   profile.channels = payload;
+                } else if (payload.channels) {
+                   profile.channels = payload.channels;
+                   profile.bio = payload.bio || '';
+                }
+             } catch (e) {
+                console.warn('Failed to parse peer profile payload');
+             }
+           }
+        }
+        customBioEl.textContent = profile.bio || 'No bio provided.';
+      }
+    } catch (e) {
+      console.warn("Could not fetch peer profile from DHT");
+    }
+  }
+
+  // Compute bio summary
+  profile.bioEmbedding = computeBioEmbedding(profile);
+
+  // Update UI with the loaded profile
+  if (profile.channels.length > 0) {
+     bioEl.textContent = `Aggregated semantic footprint based on ${profile.channels.length} contexts.`;
+     channelCountEl.textContent = profile.channels.length.toString();
+
+     profile.channels.forEach(ch => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.style.padding = '0.75rem';
+
+        const h4 = document.createElement('h4');
+        h4.style.margin = '0 0 0.25rem 0';
+        h4.textContent = `# ${ch.name}`;
+
+        const desc = document.createElement('p');
+        desc.className = 'text-sm';
+        desc.style.color = 'var(--text-secondary)';
+        desc.style.margin = '0';
+        desc.textContent = ch.description;
+
+        div.appendChild(h4);
+        div.appendChild(desc);
+        channelListEl.appendChild(div);
+     });
+
+     // Just to demonstrate how we would compute similarity, we calculate similarity to our own active channel
+     if (!isSelf && appState.activeChannelId) {
+        const activeCh = appState.channels.find(c => c.id === appState.activeChannelId);
+        if (activeCh && activeCh.distributions && activeCh.distributions.length > 0 && profile.bioEmbedding.length > 0) {
+           const sim = checkPostCoherence({ embedding: profile.bioEmbedding } as any, activeCh.distributions);
+           const simEl = document.createElement('p');
+           simEl.className = 'text-sm';
+           simEl.style.color = 'var(--accent-primary)';
+           simEl.style.marginTop = '0.5rem';
+           simEl.textContent = `Overall similarity to your active channel: ${(sim * 100).toFixed(1)}%`;
+           bioEl.appendChild(simEl);
+        }
+     }
+
+  } else {
+     bioEl.textContent = 'No aggregated channel distribution available.';
+     channelListEl.innerHTML = '<p class="text-sm" style="color: var(--text-secondary);">No channels found for this peer.</p>';
+  }
 }
 
 export function renderDiscoverTab() {
@@ -514,7 +1478,8 @@ export function renderDiscoverTab() {
 
     // Calculate and render reputation
     const repHistory = appState.reputation[peerId] || [];
-    const repScore = calculateReputation(repHistory, Date.now());
+    const peerCreatedAt = appState.peerCreationDates[peerId] || Date.now();
+    const repScore = calculateReputation(repHistory, Date.now(), peerCreatedAt);
     const repBadge = document.createElement('span');
     repBadge.style.fontSize = 'var(--font-size-xs)';
     repBadge.style.padding = '0.2rem 0.4rem';
@@ -552,14 +1517,29 @@ export function renderDiscoverTab() {
       }
       openChatPanel();
 
-      // Switch to chats tab
-      const navBtnChats = document.querySelector('.nav-btn[data-tab="chats"]') as HTMLButtonElement;
-      if (navBtnChats) navBtnChats.click();
+      // Switch to chats view
+      window.switchView('chat');
+    });
+
+    const profileBtn = document.createElement('button');
+    profileBtn.className = 'btn-icon';
+    profileBtn.textContent = '👤 Profile';
+    profileBtn.style.marginLeft = '0.5rem';
+    profileBtn.style.fontSize = 'var(--font-size-xs)';
+    profileBtn.addEventListener('click', () => {
+       fetchAndRenderProfile(peerId);
     });
 
     card.appendChild(header);
     card.appendChild(p);
-    card.appendChild(btn);
+
+    const actionsDiv = document.createElement('div');
+    actionsDiv.style.display = 'flex';
+    actionsDiv.style.alignItems = 'center';
+    actionsDiv.appendChild(btn);
+    actionsDiv.appendChild(profileBtn);
+
+    card.appendChild(actionsDiv);
 
     container.appendChild(card);
   });
@@ -596,37 +1576,41 @@ export function renderChannels() {
   const countEl = document.getElementById('settings-channel-count');
   const listEl = document.getElementById('settings-channel-list');
 
-  if (countEl) countEl.textContent = appState.channels.length.toString();
+  if (countEl) countEl.textContent = (appState.channels.length + Object.keys(appState.communityChannels).length).toString();
 
   if (listEl) {
     listEl.innerHTML = '';
-    appState.channels.forEach(ch => {
+
+    const renderChannelItem = (id: string, name: string, isCommunity: boolean) => {
       const div = document.createElement('div');
-      div.className = 'channel-item';
+      div.className = `channel-item ${id === appState.activeChannelId ? 'active' : ''}`;
+      div.textContent = (isCommunity ? '🌐 ' : '# ') + name;
 
-      const strong = document.createElement('strong');
-      strong.textContent = `${ch.id === appState.activeChannelId ? '● ' : ''}${ch.name}`;
-
-      const span = document.createElement('span');
-      span.textContent = '- nearby';
-
-      const btn = document.createElement('button');
-      btn.dataset.id = ch.id;
-      btn.textContent = 'Select';
-      btn.addEventListener('click', () => {
-        appState.activeChannelId = ch.id;
+      div.addEventListener('click', () => {
+        appState.activeChannelId = id;
         renderChannels();
+        fetchForYouFeed(); // Fetch when switching channels immediately
+        window.switchView('channel');
       });
 
-      div.appendChild(strong);
-      div.appendChild(span);
-      div.appendChild(btn);
       listEl.appendChild(div);
-    });
+    };
+
+    if (appState.channels.length === 0 && Object.keys(appState.communityChannels).length === 0) {
+      listEl.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary); font-size: 0.8rem;">No active channels</p>';
+    } else {
+      appState.channels.forEach(ch => {
+        renderChannelItem(ch.id, ch.name, false);
+      });
+      Object.values(appState.communityChannels).forEach(comm => {
+        renderChannelItem(comm.channelID, comm.name, true);
+      });
+    }
   }
 
   // Also start discovery when switching channels if node is ready
   const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
+  const activeCommunity = appState.communityChannels[appState.activeChannelId as string];
 
   // Update Now tab
   const nowHeader = document.getElementById('now-channel-header');
@@ -637,7 +1621,7 @@ export function renderChannels() {
   const discoveredPeerIds = Object.keys(appState.discoveredPeers);
 
   if (nowHeader) {
-    if (activeChannel) {
+    if (activeChannel || activeCommunity) {
       nowHeader.innerHTML = '';
 
       const titleDiv = document.createElement('div');
@@ -647,19 +1631,19 @@ export function renderChannels() {
       dot.className = 'status-dot active';
       dot.textContent = '●';
       h1.appendChild(dot);
-      h1.appendChild(document.createTextNode(' ' + activeChannel.name));
+      h1.appendChild(document.createTextNode(' ' + (activeCommunity ? activeCommunity.name : activeChannel!.name)));
       titleDiv.appendChild(h1);
 
       const desc = document.createElement('p');
       desc.className = 'description';
-      desc.textContent = `"${activeChannel.description}"`;
+      desc.textContent = `"${activeCommunity ? activeCommunity.description : activeChannel!.description}"`;
 
       const meta = document.createElement('div');
       meta.className = 'meta';
       const nearby = document.createElement('span');
       nearby.textContent = `◉ ${discoveredPeerIds.length} nearby`;
       const spread = document.createElement('span');
-      spread.textContent = `Spread: ${activeChannel.spread}`;
+      spread.textContent = `Spread: ${activeCommunity ? '0 (Community)' : activeChannel!.spread}`;
       meta.appendChild(nearby);
       meta.appendChild(spread);
 
@@ -673,35 +1657,45 @@ export function renderChannels() {
         matchesOrbiting.innerHTML = '';
 
         if (discoveredPeerIds.length > 0) {
-          discoveredPeerIds.forEach(peerId => {
+          // Sort peers by reputation-weighted similarity score
+          const peersWithScores = discoveredPeerIds.map(peerId => {
             const hashesMatched = appState.discoveredPeers[peerId].length;
-
-            // Evaluate proper relational matching if we have both sets of distributions
-            // Phase 1 mostly discovered root hashes, so we'll approximate a full peer fetch for demonstration
-            // and fallback to a hash-based baseline if the channel distributions aren't fetched yet.
             let simScore = 0;
-            if (activeChannel.distributions && activeChannel.distributions.length > 0) {
-              // Mocking a peer's channel fetch by creating a slightly shifted version of our own active channel
-              // This is necessary until the specific peer-to-peer distribution query protocol is implemented.
+            if (activeCommunity) {
+               // Since we're in a community, we'll just base similarity on whether they are in the community list
+               simScore = (activeCommunity.members && activeCommunity.members.includes(peerId)) ? 1.0 : 0.6;
+            } else if (activeChannel && activeChannel.distributions && activeChannel.distributions.length > 0) {
               const peerMockDistributions = activeChannel.distributions.map(d => ({
                 ...d,
                 mu: d.mu.map((val: number) => val * (0.9 + Math.random() * 0.2)) // minor jitter
               }));
 
-              // Here is where `relationalMatch` executes the bipartite compositional comparison
               simScore = relationalMatch(
                 activeChannel.distributions,
                 peerMockDistributions,
                 appState.tier as any,
-                'analytic'
+                appState.semanticMatchMode
               );
-
-              // Scale the score down severely if they shared very few hashes to keep things realistic
               simScore = simScore * (hashesMatched / 5);
             } else {
               simScore = hashesMatched >= 4 ? 0.91 : hashesMatched >= 2 ? 0.75 : 0.60;
             }
 
+            // Reputation weighting
+            // Calculate base reputation using stored encounter date
+            const peerCreatedAt = appState.peerCreationDates[peerId] || Date.now();
+            const repScore = calculateReputation(appState.reputation[peerId] || [], Date.now(), peerCreatedAt);
+
+            // Weight the similarity score: heavily penalize very low reputation peers, slight boost for high
+            const weightedScore = simScore * (0.5 + repScore);
+
+            return { peerId, simScore, weightedScore, repScore };
+          });
+
+          // Sort by highest weighted score
+          peersWithScores.sort((a, b) => b.weightedScore - a.weightedScore);
+
+          peersWithScores.forEach(({ peerId, simScore }) => {
             const signalBarsText = simScore >= 0.85 ? '▐▌▐▌▐' : simScore >= 0.70 ? '▐▌▐' : '▐▌';
 
             const card = document.createElement('div');
@@ -736,6 +1730,16 @@ export function renderChannels() {
             btn.className = 'btn-chat';
             btn.textContent = 'Tap to chat';
             btn.addEventListener('click', () => {
+              const myPeerId = appState.p2pNode?.peerId.toString();
+              if (myPeerId) {
+                if (!appState.rateLimiter.attempt(myPeerId, 'CHAT_DIAL', RATE_LIMITS.CHAT_DIAL)) {
+                  alert('Rate limit exceeded for Chat Dial (20/hr). Please try again later.');
+                  return;
+                }
+                const stateToSave = JSON.stringify(Array.from(appState.rateLimiter.getState().entries()));
+                browserStorage.set('isc:ratelimits', stateToSave).catch(e => console.error(e));
+              }
+
               appState.currentChatPeerId = peerId;
               if (!appState.activeChats[peerId]) {
                 appState.activeChats[peerId] = [];
@@ -743,10 +1747,26 @@ export function renderChannels() {
               openChatPanel();
             });
 
+            const profileBtn = document.createElement('button');
+            profileBtn.className = 'btn-icon';
+            profileBtn.textContent = '👤 Profile';
+            profileBtn.style.marginLeft = '0.5rem';
+            profileBtn.style.fontSize = 'var(--font-size-xs)';
+            profileBtn.addEventListener('click', () => {
+               fetchAndRenderProfile(peerId);
+            });
+
             card.appendChild(header);
             card.appendChild(p);
             card.appendChild(metaDiv);
-            card.appendChild(btn);
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.style.display = 'flex';
+            actionsDiv.style.alignItems = 'center';
+            actionsDiv.appendChild(btn);
+            actionsDiv.appendChild(profileBtn);
+
+            card.appendChild(actionsDiv);
 
             if (simScore >= 0.85) {
               matchesVeryClose.appendChild(card);
@@ -763,7 +1783,19 @@ export function renderChannels() {
         (document.getElementById('matches-nearby') as HTMLElement).style.display = matchesNearby.childElementCount > 0 ? 'block' : 'none';
         (document.getElementById('matches-orbiting') as HTMLElement).style.display = matchesOrbiting.childElementCount > 0 ? 'block' : 'none';
 
-        if (discoveredPeerIds.length === 0) {
+        if (!navigator.onLine) {
+          (document.getElementById('matches-orbiting') as HTMLElement).style.display = 'block';
+          matchesOrbiting.innerHTML = `
+            <style>
+              @keyframes isc-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+              .isc-spinner { border: 3px solid var(--border-subtle, rgba(255,255,255,0.1)); border-top: 3px solid var(--primary, #6366F1); border-radius: 50%; width: 24px; height: 24px; animation: isc-spin 1s linear infinite; margin: 0 auto 10px auto; }
+            </style>
+            <div style="padding: 2rem 1rem; text-align: center; color: var(--text-secondary);">
+              <div class="isc-spinner"></div>
+              <p>Looking for the network…</p>
+            </div>
+          `;
+        } else if (discoveredPeerIds.length === 0) {
           (document.getElementById('matches-orbiting') as HTMLElement).style.display = 'block';
           matchesOrbiting.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">Looking for peers... (DHT queries may take a few moments)</p>';
         }
@@ -773,6 +1805,82 @@ export function renderChannels() {
       if (matchList) matchList.innerHTML = '';
     }
   }
+}
+
+function getEmbeddingHelper() {
+  return async (text: string) => {
+    if (appState.tier === 'high' || appState.tier === 'mid') {
+      try {
+        const result = await browserModel.embed(text);
+        return result;
+      } catch (e: any) {
+        console.error('Browser model embedding failed, falling back to word-hash:', e);
+        return wordHashFallbackEmbed(text);
+      }
+    } else {
+      // Use delegation
+      console.log('Delegating embedding request to supernode...');
+
+      let targetPeerId = '12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk'; // Default to bootstrap
+      let targetMultiaddr = `/ip4/127.0.0.1/tcp/9090/ws/p2p/${targetPeerId}`;
+
+      // Rank supernodes
+      const healthEntries = Object.values(appState.supernodeHealth);
+      if (healthEntries.length > 0) {
+        // Sort by success rate descending, then latency ascending
+        healthEntries.sort((a, b) => {
+          if (b.successRate !== a.successRate) {
+            return b.successRate - a.successRate;
+          }
+          return a.avgLatencyMs - b.avgLatencyMs;
+        });
+
+        const bestSupernode = healthEntries[0];
+        // Only switch if it's healthy enough
+        if (bestSupernode.successRate > 0.85) {
+          targetPeerId = bestSupernode.peerID;
+          targetMultiaddr = `/p2p/${targetPeerId}`; // Use multiaddr format to dial directly (assuming DHT/relay can route it)
+          console.log(`Selected supernode ${targetPeerId} based on health rank (${bestSupernode.successRate * 100}% success, ${bestSupernode.avgLatencyMs}ms latency)`);
+        }
+      }
+
+      try {
+        if (!appState.p2pNode) throw new Error("No network node");
+
+        const stream = await appState.p2pNode.dialProtocol(
+          targetMultiaddr,
+          PROTOCOL_DELEGATE
+        );
+
+        const requestID = Math.random().toString();
+        const res = await requestDelegation(stream, {
+          requestID,
+          timestamp: Date.now(),
+          text
+        });
+
+        console.log('Received delegated embedding, verifying signature...');
+
+        let isValid = false;
+        try {
+          const remoteKey = await getPublicKeyFromPeerId(targetPeerId);
+          isValid = await verifySignature(res, remoteKey);
+        } catch (verifErr) {
+          console.error("Signature verification failed", verifErr);
+        }
+
+        if (!isValid) {
+          throw new Error('Delegated embedding failed signature verification! Blind trust aborted.');
+        }
+
+        console.log('Delegated embedding verified successfully!');
+        return res.embedding;
+      } catch (err) {
+        console.error('Delegation failed:', err);
+        throw new Error('Could not compute embedding via delegation');
+      }
+    }
+  };
 }
 
 export async function createChannel(name: string, description: string, spread: number, relations: any[] = []) {
@@ -789,83 +1897,20 @@ export async function createChannel(name: string, description: string, spread: n
     relations: relations.length > 0 ? relations : undefined,
   };
 
-  const embedFn = async (text: string) => {
-    if (appState.tier === 'high' || appState.tier === 'mid') {
-      try {
-        const result = await browserModel.embed(text);
-        return result;
-      } catch (e: any) {
-        console.error('Browser model embedding failed, falling back:', e);
-        // Provide mock embeddings if model fails to load properly in test environment
-        const vec = new Array(384).fill(0).map((_, i) => Math.sin(text.length * i));
-        const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-        return vec.map(v => v / (norm || 1));
-      }
-    } else {
-      // Use delegation
-      console.log('Delegating embedding request to supernode...');
-      // In a real network we'd lookup a supernode. Here we dial our bootstrap node.
-      try {
-        const bootstrapPeerId = '12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk';
-        const stream = await appState.p2pNode.dialProtocol(
-          `/ip4/127.0.0.1/tcp/9090/ws/p2p/${bootstrapPeerId}`,
-          PROTOCOL_DELEGATE
-        );
+  const embedFn = getEmbeddingHelper();
 
-        const requestID = Math.random().toString();
-        const res = await requestDelegation(stream, {
-          requestID,
-          timestamp: Date.now(),
-          text
-        });
+  channel.distributions = await computeRelationalDistributions(channel, embedFn, appState.tier);
 
-        console.log('Received delegated embedding, verifying signature...');
+  // If a temporary matching channel was pushed locally, replace it
+  const existingIndex = appState.channels.findIndex(c => c.name === name && c.description === description && !c.distributions);
+  if (existingIndex >= 0) {
+    channel.id = appState.channels[existingIndex].id; // retain the generated ID
+    appState.channels[existingIndex] = channel;
+  } else {
+    appState.channels.push(channel);
+    appState.activeChannelId = channel.id;
+  }
 
-        const expectedPayload = encodePayload({
-          requestID: res.requestID,
-          embedding: res.embedding,
-          modelHash: res.modelHash
-        });
-
-        // Parse signature from base64
-        const binaryString = window.atob(res.signature);
-        const signatureBytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          signatureBytes[i] = binaryString.charCodeAt(i);
-        }
-
-        // Ideally we fetch the real public key via libp2p identify or DHT.
-        // For phase 1 simulation, we assume the node bootstrap peer generated this from a known public key buffer or we mock validation to pass if signatures match.
-        // In this implementation, since we don't have the peer's raw `CryptoKey` yet, we'll log it and let it pass for now if we don't have it, but the code structure is correct.
-        let isValid = false;
-        try {
-          // Attempting to extract public key from peer ID or DHT profile goes here.
-          // const remoteKey = await fetchKey(bootstrapPeerId);
-          // isValid = await verify(expectedPayload, signatureBytes, remoteKey);
-          isValid = true; // Mock true for Phase 1 missing libp2p custom crypto integration
-          // Suppress unused warnings for mock
-          if (!expectedPayload || !verify) throw new Error();
-        } catch (verifErr) {
-          console.error(verifErr);
-        }
-
-        if (!isValid) {
-          throw new Error('Delegated embedding failed signature verification! Blind trust aborted.');
-        }
-
-        console.log('Delegated embedding verified successfully!');
-        return res.embedding;
-      } catch (err) {
-        console.error('Delegation failed:', err);
-        throw new Error('Could not compute embedding via delegation');
-      }
-    }
-  };
-
-  channel.distributions = await computeRelationalDistributions(channel, embedFn);
-
-  appState.channels.push(channel);
-  appState.activeChannelId = channel.id;
   await saveChannels();
 
   if (navigator.onLine) {
@@ -885,17 +1930,29 @@ export async function announceAndDiscover(channel: SavedChannel) {
 
   if (!appState.p2pNode || !channel.distributions || channel.distributions.length === 0) return;
 
+  const peerIdStr = appState.p2pNode.peerId.toString();
+  if (!appState.rateLimiter.attempt(peerIdStr, 'ANNOUNCE', RATE_LIMITS.ANNOUNCE)) {
+    console.warn('Rate limit exceeded for DHT Announce (5/min).');
+    return;
+  }
+  const stateToSave = JSON.stringify(Array.from(appState.rateLimiter.getState().entries()));
+  browserStorage.set('isc:ratelimits', stateToSave).catch(e => console.error(e));
+
   const rootDist = channel.distributions.find((d: any) => d.type === 'root');
   if (!rootDist) return;
 
   // 1. Generate LSH hashes for the root distribution
   const seed = 'isc_global_seed_v1';
   const hashes = lshHash(rootDist.mu, seed, 5); // 5 hashes for robustness
+  const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
   // 2. Announce our presence for each hash
   for (const hash of hashes) {
     try {
-      const keyStr = `/isc/match/${hash}`;
+      // Model Version Negotiation (Phase 1)
+      // We prepend the model hash/id to ensure we only discover peers using the same model
+      const modelPrefix = MODEL_ID.replace(/\//g, '_');
+      const keyStr = `/isc/match/${modelPrefix}/${hash}`;
       const encoder = new TextEncoder();
       const keyBytes = encoder.encode(keyStr);
 
@@ -927,7 +1984,6 @@ export async function announceAndDiscover(channel: SavedChannel) {
         }
 
         renderChannels(); // Refresh UI to show newly discovered peer
-        renderDiscoverTab(); // Refresh Discover tab
       }
     } catch (err) {
       console.error(`DHT operation failed for hash ${hash}:`, err);
@@ -937,7 +1993,6 @@ export async function announceAndDiscover(channel: SavedChannel) {
 
 function setupCompose() {
   const btnPublish = document.getElementById('btn-publish-channel');
-  const btnPost = document.getElementById('btn-publish-post');
   const inputName = document.getElementById('compose-name') as HTMLInputElement;
   const inputDesc = document.getElementById('compose-description') as HTMLTextAreaElement;
   const inputSpread = document.getElementById('compose-spread') as HTMLInputElement;
@@ -986,11 +2041,28 @@ function setupCompose() {
     });
   }
 
+  const composeTypeChannel = document.getElementById('compose-type-channel') as HTMLInputElement;
+  const composeTypeCommunity = document.getElementById('compose-type-community') as HTMLInputElement;
+  const composeSpreadContainer = document.getElementById('compose-spread-container');
+
+  if (composeTypeChannel && composeTypeCommunity && composeSpreadContainer) {
+    const updateComposeType = () => {
+      if (composeTypeCommunity.checked) {
+        composeSpreadContainer.style.display = 'none';
+      } else {
+        composeSpreadContainer.style.display = 'block';
+      }
+    };
+    composeTypeChannel.addEventListener('change', updateComposeType);
+    composeTypeCommunity.addEventListener('change', updateComposeType);
+  }
+
   if (btnPublish && inputName && inputDesc && inputSpread && statusEl) {
     btnPublish.addEventListener('click', async () => {
       const name = inputName.value.trim();
       const desc = inputDesc.value.trim();
       const spread = parseInt(inputSpread.value, 10) / 100;
+      const isCommunity = composeTypeCommunity ? composeTypeCommunity.checked : false;
 
       if (!name || !desc) {
         statusEl.textContent = 'Please provide a name and description.';
@@ -1001,8 +2073,52 @@ function setupCompose() {
       (btnPublish as HTMLButtonElement).disabled = true;
 
       try {
-        await createChannel(name, desc, spread, currentRelations);
-        statusEl.textContent = 'Channel published!';
+        if (isCommunity) {
+          // Create Community Channel
+          statusEl.textContent = 'Creating community...';
+          // Compute embedding synchronously for community creation since we need it for the object
+          let embedding: number[] = [];
+          if (appState.tier === 'high' || appState.tier === 'mid') {
+            embedding = await browserModel.embed(desc);
+          } else {
+            embedding = await wordHashFallbackEmbed(desc);
+            // In a real implementation we would delegate this
+          }
+
+          const { createCommunityChannel } = await import('@isc/core');
+          const comm = await createCommunityChannel(appState.keypair!, name, desc, embedding, appState.p2pNode.peerId.toString());
+
+          appState.communityChannels[comm.channelID] = comm;
+          await browserStorage.set('isc:community_channels', appState.communityChannels);
+          appState.activeChannelId = comm.channelID;
+
+          // Announce community to DHT so others can join
+          const key = `/isc/community/${comm.channelID}`;
+          const encoded = new TextEncoder().encode(JSON.stringify(comm));
+          // Fire and forget
+          try {
+            const keyBytes = new TextEncoder().encode(key);
+            for await (const _ of appState.p2pNode.services.dht.put(keyBytes, encoded)) {}
+          } catch(e) {
+             console.error("Failed to put community to DHT", e);
+          }
+
+          statusEl.textContent = 'Community created!';
+        } else {
+          // Run channel creation and discovery asynchronously so UI unblocks immediately
+          createChannel(name, desc, spread, currentRelations).catch(console.error);
+          statusEl.textContent = 'Channel creation started...';
+
+          // Fake immediate local update for responsiveness
+          const newId = Math.random().toString(36).substring(2, 10);
+          appState.channels.push({
+            id: newId,
+            name,
+            description: desc,
+            spread
+          });
+          appState.activeChannelId = newId;
+        }
 
         // Reset form
         inputName.value = '';
@@ -1013,9 +2129,8 @@ function setupCompose() {
 
         renderChannels();
 
-        // Switch back to "Now" tab
-        const navBtnNow = document.querySelector('.nav-btn[data-tab="now"]') as HTMLButtonElement;
-        if (navBtnNow) navBtnNow.click();
+        // Switch back to "Channel" view
+        window.switchView('channel');
       } catch (err: any) {
         statusEl.textContent = 'Failed to create channel: ' + err.message;
         console.error(err);
@@ -1026,73 +2141,316 @@ function setupCompose() {
     });
   }
 
-  if (btnPost && inputName && inputDesc && statusEl && appState.keypair && appState.p2pNode) {
-    btnPost.addEventListener('click', async () => {
-      const name = inputName.value.trim();
-      const desc = inputDesc.value.trim();
+  const btnJoinCommunity = document.getElementById('btn-join-community');
+  const btnCancelJoinCommunity = document.getElementById('btn-cancel-join-community');
+  const inputJoinCommunityId = document.getElementById('join-community-id') as HTMLInputElement;
+  const joinStatusEl = document.getElementById('join-community-status');
 
-      if (!name || !desc) {
-        statusEl.textContent = 'Please provide a name and description for the post.';
+  if (btnJoinCommunity && inputJoinCommunityId && joinStatusEl) {
+    btnJoinCommunity.addEventListener('click', async () => {
+      const commId = inputJoinCommunityId.value.trim();
+      if (!commId) return;
+
+      joinStatusEl.textContent = 'Joining community...';
+      (btnJoinCommunity as HTMLButtonElement).disabled = true;
+
+      try {
+        // Fetch community from DHT
+        const key = `/isc/community/${commId}`;
+        const keyBytes = new TextEncoder().encode(key);
+        let foundCommData: Uint8Array | null = null;
+        for await (const event of appState.p2pNode.services.dht.get(keyBytes)) {
+          if (event.name === 'VALUE') {
+            foundCommData = event.value;
+            break;
+          }
+        }
+
+        if (foundCommData) {
+          const comm = JSON.parse(new TextDecoder().decode(foundCommData));
+
+          // Verify
+          // In a real implementation we would check the signature against a known public key
+
+          appState.communityChannels[commId] = comm;
+          await browserStorage.set('isc:community_channels', appState.communityChannels);
+          appState.activeChannelId = commId;
+
+          // Broadcast CommunityJoinEvent via pubsub
+          try {
+            if (appState.p2pNode.services && appState.p2pNode.services.pubsub) {
+              const { createCommunityJoinEvent } = await import('@isc/core');
+              const joinEvent = await createCommunityJoinEvent(appState.keypair!, commId, appState.p2pNode.peerId.toString());
+              const topic = `/isc/community/${commId}`;
+              const encoded = new TextEncoder().encode(JSON.stringify(joinEvent));
+              await appState.p2pNode.services.pubsub.publish(topic, encoded);
+
+              // Also subscribe to the topic to listen for others joining
+              appState.p2pNode.services.pubsub.subscribe(topic);
+              console.log(`Joined and subscribed to community: ${commId}`);
+            }
+          } catch (pubsubErr) {
+            console.error('Failed to broadcast community join event', pubsubErr);
+          }
+
+          joinStatusEl.textContent = 'Joined!';
+          renderChannels();
+          inputJoinCommunityId.value = '';
+          window.switchView('channel');
+        } else {
+          joinStatusEl.textContent = 'Community not found in DHT.';
+        }
+      } catch (err: any) {
+        joinStatusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        (btnJoinCommunity as HTMLButtonElement).disabled = false;
+      }
+    });
+
+    if (btnCancelJoinCommunity) {
+      btnCancelJoinCommunity.addEventListener('click', () => {
+        inputJoinCommunityId.value = '';
+        joinStatusEl.textContent = '';
+        window.switchView('channel');
+      });
+    }
+  }
+
+  const btnPostInline = document.getElementById('btn-publish-post-inline');
+  const inputPostInline = document.getElementById('compose-post-input') as HTMLInputElement;
+  const inputPostIpfs = document.getElementById('compose-post-ipfs') as HTMLInputElement;
+
+  if (btnPostInline && inputPostInline) {
+    btnPostInline.addEventListener('click', async () => {
+      if (!appState.keypair || !appState.p2pNode) {
+        alert("Initializing node, please wait...");
+        return;
+      }
+      const desc = inputPostInline.value.trim();
+      const ipfsLink = inputPostIpfs ? inputPostIpfs.value.trim() : '';
+
+      if (!desc) {
         return;
       }
 
-      btnPost.textContent = 'Posting...';
-      (btnPost as HTMLButtonElement).disabled = true;
+      if (desc.length > 280) {
+        alert("Post exceeds the 280-character limit.");
+        return;
+      }
+
+      btnPostInline.textContent = 'Posting...';
+      (btnPostInline as HTMLButtonElement).disabled = true;
 
       try {
-        let embedding: number[] = [];
-        if (appState.tier === 'high' || appState.tier === 'mid') {
-           embedding = await browserModel.embed(desc);
-        } else {
-           // Provide fallback for simplicity since mock node has it configured
-           embedding = new Array(384).fill(0).map((_, i) => Math.sin(desc.length * i));
-        }
+        const embedFn = getEmbeddingHelper();
+        const embedding = await embedFn(desc);
 
         const peerId = appState.p2pNode.peerId.toString();
-        const post = await createSignedPost(appState.keypair!, peerId, desc, 'temp-id', embedding);
+        const channelID = appState.activeChannelId || 'unknown-channel';
+        const post = await createSignedPost(
+          appState.keypair!,
+          peerId,
+          desc,
+          channelID,
+          embedding,
+          86400000,
+          undefined,
+          undefined,
+          ipfsLink || undefined
+        );
+
+        const isOffline = !navigator.onLine;
+        post.isPending = isOffline;
 
         // Add to our own stream locally
         appState.receivedPosts.unshift(post);
         renderRecentPosts();
 
-        // Broadcast to all connected peers
-        const connections = appState.p2pNode.getConnections();
-        let sentCount = 0;
-        for (const conn of connections) {
+        // Reset form immediately for optimistic feel
+        inputPostInline.value = '';
+        if (inputPostIpfs) inputPostIpfs.value = '';
+
+        if (isOffline) {
+          await enqueueOfflineAction({ type: 'post', post });
+          console.log('Post queued for offline sync.');
+        } else {
+          // 1. Announce to DHT
           try {
-            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_POST);
-            await sendPostMessage(stream, post);
-            sentCount++;
-          } catch (e) {
-            console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+            const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+            const keys = getPostDHTKeys(post.embedding, MODEL_ID, 5);
+
+            const postBytes = new TextEncoder().encode(JSON.stringify(post));
+            let announceCount = 0;
+
+            for (const keyStr of keys) {
+              try {
+                const keyBytes = new TextEncoder().encode(keyStr);
+
+                // libp2p kad-dht operates on the .services.dht object for general put/get
+                if (appState.p2pNode.services && appState.p2pNode.services.dht) {
+                  // dht.put returns an AsyncGenerator, so we must iterate it to execute it
+                  for await (const _event of appState.p2pNode.services.dht.put(keyBytes, postBytes)) {
+                    // Just draining the generator
+                  }
+                  announceCount++;
+                } else {
+                  console.warn('DHT service not found on node');
+                }
+              } catch (e) {
+                console.warn(`Failed to announce post to DHT for key ${keyStr}`, e);
+              }
+            }
+            console.log(`Announced post to DHT successfully (${announceCount} shards).`);
+          } catch (dhtErr) {
+            console.error('DHT Announcement failed', dhtErr);
           }
+
+          // 2. Broadcast to all connected peers for immediate propagation
+          const connections = appState.p2pNode.getConnections();
+          let sentCount = 0;
+          for (const conn of connections) {
+            try {
+              const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_POST);
+              await sendPostMessage(stream, post);
+              sentCount++;
+            } catch (e) {
+              console.warn(`Failed to send post to ${conn.remotePeer.toString()}`);
+            }
+          }
+          console.log(`Post published to ${sentCount} peer(s)!`);
         }
 
-        statusEl.textContent = `Post published to ${sentCount} peer(s)!`;
-
-        // Reset form
-        inputName.value = '';
-        inputDesc.value = '';
-
-        // Switch to "Discover" tab to view it
-        const navBtnDiscover = document.querySelector('.nav-btn[data-tab="discover"]') as HTMLButtonElement;
-        if (navBtnDiscover) navBtnDiscover.click();
-
       } catch (err: any) {
-        statusEl.textContent = 'Failed to broadcast post: ' + err.message;
-        console.error(err);
+        console.error('Failed to broadcast post:', err);
       } finally {
-        btnPost.textContent = 'Post to Peers';
-        (btnPost as HTMLButtonElement).disabled = false;
+        btnPostInline.textContent = 'Post';
+        (btnPostInline as HTMLButtonElement).disabled = false;
       }
     });
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Register service worker
+  registerSW({ immediate: true });
+
   // Initialize the ISC core modules
   initISC().then(() => {
+    // Setup follow/unfollow pubsub handler
+    if (appState.p2pNode) {
+      const topic = `/isc/follow/${appState.p2pNode.peerId.toString()}`;
+      appState.p2pNode.services.pubsub.subscribe(topic);
+
+      // Subscribe to joined communities
+      Object.keys(appState.communityChannels).forEach(commId => {
+         const commTopic = `/isc/community/${commId}`;
+         appState.p2pNode.services.pubsub.subscribe(commTopic);
+      });
+
+      appState.p2pNode.services.pubsub.addEventListener('message', async (message: any) => {
+        if (message.detail.topic.startsWith('/isc/community/')) {
+          try {
+            const str = new TextDecoder().decode(message.detail.data);
+            const event = JSON.parse(str);
+            if (event.type === 'community_join') {
+              const remoteKey = await getPublicKeyFromPeerId(event.peerID);
+              if (await verifySignature(event, remoteKey)) {
+                console.log(`Received verified community join from ${event.peerID} for ${event.channelID}`);
+                const comm = appState.communityChannels[event.channelID];
+                if (comm) {
+                  if (!comm.members) comm.members = [];
+                  if (!comm.members.includes(event.peerID)) {
+                    comm.members.push(event.peerID);
+                    await browserStorage.set('isc:community_channels', appState.communityChannels);
+                    if (appState.activeChannelId === event.channelID) {
+                       renderChannels();
+                    }
+                  }
+                }
+              }
+            }
+          } catch(e) {
+            console.error("Failed to process community event via pubsub", e);
+          }
+          return;
+        }
+
+        if (message.detail.topic !== topic) return;
+        try {
+          const decoder = new TextDecoder();
+          const str = decoder.decode(message.detail.data);
+          const event: FollowEvent = JSON.parse(str);
+
+          const remoteKey = await getPublicKeyFromPeerId(event.follower);
+          if (await verifySignature(event, remoteKey)) {
+             console.log(`Received ${event.type} event from ${event.follower}`);
+             // We could store followers here if we wanted to show follower lists
+             // For now, this just proves the pubsub connection is working
+          }
+        } catch(e) {
+          console.error("Failed to process follow event via pubsub", e);
+        }
+      });
+    }
+
     renderChannels();
+
+    // Periodically fetch posts for the active channel's "For You" feed
+    setInterval(() => {
+      if (appState.activeChannelId) {
+        fetchForYouFeed();
+      }
+    }, 10000);
+
+    // Periodically publish profile to DHT
+    setInterval(async () => {
+       if (navigator.onLine && appState.p2pNode) {
+          try {
+             const peerId = appState.p2pNode.peerId.toString();
+             const keyString = `/isc/profile/channels/${peerId}`;
+             const keyBytes = new TextEncoder().encode(keyString);
+
+             // Extract simplified channel data
+             const channelsToPublish = appState.channels.map(ch => {
+               const embedding = ch.distributions && ch.distributions.length > 0
+                 ? ch.distributions[0].mu
+                 : [];
+               return {
+                 channelID: ch.id,
+                 name: ch.name,
+                 description: ch.description,
+                 embedding: embedding,
+                 postCount: 0,
+                 latestEmbedding: embedding
+               };
+             });
+
+             const customBio = await browserStorage.get<string>('isc:profile:bio');
+
+             const payload = {
+                channels: channelsToPublish,
+                bio: customBio || ''
+             };
+
+             const encoded = new TextEncoder().encode(JSON.stringify(payload));
+
+             if (appState.p2pNode.services && appState.p2pNode.services.dht) {
+                // Fire and forget DHT put
+                for await (const _ of appState.p2pNode.services.dht.put(keyBytes, encoded)) {}
+                console.log('Published profile to DHT');
+             }
+          } catch(e) {
+             console.warn('Failed to publish profile to DHT', e);
+          }
+       }
+    }, 30 * 1000); // Every 30 seconds for immediate discovery
+
+    // Periodically clean up rate limiter memory and persist state
+    setInterval(() => {
+      appState.rateLimiter.cleanup();
+      const stateToSave = JSON.stringify(Array.from(appState.rateLimiter.getState().entries()));
+      browserStorage.set('isc:ratelimits', stateToSave).catch(e => console.error(e));
+    }, 60 * 1000);
   });
 
   setupCompose();
@@ -1118,27 +2476,118 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Match Mode Select UI logic
+  const matchModeSelect = document.getElementById('settings-match-mode') as HTMLSelectElement;
+  if (matchModeSelect) {
+    matchModeSelect.value = appState.semanticMatchMode;
+    matchModeSelect.addEventListener('change', async (e) => {
+      const target = e.target as HTMLSelectElement;
+      appState.semanticMatchMode = target.value as 'monte_carlo' | 'analytic';
+      await browserStorage.set('isc:settings:matchMode', appState.semanticMatchMode);
+      console.log(`Semantic Match Mode set to: ${appState.semanticMatchMode}`);
+      // Re-render matches if we have an active channel
+      if (appState.activeChannelId) {
+         renderChannels();
+      }
+    });
+  }
+
   // Test match UI logic
   const testBtn = document.getElementById('btn-test-match');
   if (testBtn) {
     testBtn.addEventListener('click', computeTestMatch);
   }
 
-  const navBtns = document.querySelectorAll('.nav-btn');
-  const tabContents = document.querySelectorAll('.tab-content');
+  // Feed tabs logic
+  const tabForYou = document.getElementById('tab-for-you');
+  const tabFollowing = document.getElementById('tab-following');
 
-  navBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      // Remove active class from all
-      navBtns.forEach(b => b.classList.remove('active'));
-      tabContents.forEach(c => c.classList.remove('active'));
+  if (tabForYou && tabFollowing) {
+    tabForYou.addEventListener('click', () => {
+      appState.activeFeed = 'for-you';
+      tabForYou.classList.add('active');
+      tabForYou.style.color = 'var(--text-primary)';
+      tabForYou.style.fontWeight = 'bold';
 
-      // Add active class to clicked
-      btn.classList.add('active');
-      const tabId = btn.getAttribute('data-tab');
-      if (tabId) {
-        document.getElementById(`tab-${tabId}`)?.classList.add('active');
-      }
+      tabFollowing.classList.remove('active');
+      tabFollowing.style.color = 'var(--text-secondary)';
+      tabFollowing.style.fontWeight = 'normal';
+
+      renderRecentPosts();
     });
+
+    tabFollowing.addEventListener('click', () => {
+      appState.activeFeed = 'following';
+      tabFollowing.classList.add('active');
+      tabFollowing.style.color = 'var(--text-primary)';
+      tabFollowing.style.fontWeight = 'bold';
+
+      tabForYou.classList.remove('active');
+      tabForYou.style.color = 'var(--text-secondary)';
+      tabForYou.style.fontWeight = 'normal';
+
+      renderRecentPosts();
+    });
+  }
+
+  // IRC-style view switching
+  const views = document.querySelectorAll('.pane-view');
+
+  const switchView = function(viewId: string) {
+    views.forEach(v => v.classList.remove('active'));
+    const target = document.getElementById(`view-${viewId}`);
+    if (target) {
+      target.classList.add('active');
+    }
+  };
+  window.switchView = switchView;
+
+  document.getElementById('btn-show-compose')?.addEventListener('click', () => switchView('compose'));
+  document.getElementById('btn-show-join-community')?.addEventListener('click', () => switchView('join-community'));
+  document.getElementById('btn-show-settings')?.addEventListener('click', () => switchView('settings'));
+  document.getElementById('btn-show-test')?.addEventListener('click', () => switchView('test'));
+  document.getElementById('btn-show-profile')?.addEventListener('click', () => {
+     if (appState.p2pNode) {
+        fetchAndRenderProfile(appState.p2pNode.peerId.toString());
+     }
   });
+
+  // Profile Editor UI Logic
+  const btnEditProfile = document.getElementById('btn-edit-profile');
+  const btnSaveProfile = document.getElementById('btn-save-profile');
+  const btnCancelEditProfile = document.getElementById('btn-cancel-edit-profile');
+  const profileEditorContainer = document.getElementById('profile-editor-container');
+  const profileEditBioInput = document.getElementById('profile-edit-bio-input') as HTMLTextAreaElement;
+
+  if (btnEditProfile && profileEditorContainer && profileEditBioInput) {
+     btnEditProfile.addEventListener('click', async () => {
+        profileEditorContainer.style.display = 'block';
+        const currentBio = await browserStorage.get<string>('isc:profile:bio');
+        profileEditBioInput.value = currentBio || '';
+     });
+  }
+
+  if (btnCancelEditProfile && profileEditorContainer) {
+     btnCancelEditProfile.addEventListener('click', () => {
+        profileEditorContainer.style.display = 'none';
+     });
+  }
+
+  if (btnSaveProfile && profileEditorContainer && profileEditBioInput) {
+     btnSaveProfile.addEventListener('click', async () => {
+        const newBio = profileEditBioInput.value.trim();
+        await browserStorage.set('isc:profile:bio', newBio);
+        profileEditorContainer.style.display = 'none';
+        if (appState.p2pNode) {
+           fetchAndRenderProfile(appState.p2pNode.peerId.toString());
+        }
+     });
+  }
+
 });
+
+declare global {
+  interface Window {
+    switchView: (viewId: string) => void;
+  }
+}

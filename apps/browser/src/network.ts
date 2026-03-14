@@ -10,9 +10,9 @@ import { ping } from '@libp2p/ping';
 import { identify } from '@libp2p/identify';
 import { bootstrap } from '@libp2p/bootstrap';
 import { Keypair } from '@isc/core';
-import { handleIncomingAnnounce, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE } from '@isc/protocol';
+import { handleIncomingAnnounce, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_MODERATION, handleIncomingModeration } from '@isc/protocol';
 
-export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, onAnnounce?: (msg: any) => void) {
+export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, onAnnounce?: (msg: any) => void, onModeration?: (msg: any) => void) {
   // We need to convert the subtle CryptoKey into a libp2p expected format
   // For Phase 1, we will just let libp2p generate its own peerId for now
   // until we wire up the custom ed25519 Web Crypto API keys properly to libp2p.
@@ -26,7 +26,9 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
     transports: [
       webSockets(), // Needed to connect to bootstrap relays
       webRTC(),      // Needed for direct browser-to-browser chat
-      circuitRelayTransport({})
+      circuitRelayTransport({
+        discoverRelays: 3 // Discover and use up to 3 relays for NAT traversal
+      } as any)
     ],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux(), mplex()],
@@ -53,6 +55,9 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
   await node.start();
   console.log('libp2p node started with peerId:', node.peerId.toString());
 
+  // Note: Most protocol handlers are now registered directly on appState.p2pNode inside main.ts.
+  // The ones below are legacy from early Phase 1.
+
   // Register Protocol Handlers
   node.handle(PROTOCOL_CHAT, (data: any) => {
     if (onChat) {
@@ -64,6 +69,12 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
   node.handle(PROTOCOL_ANNOUNCE, (data: any) => {
     if (onAnnounce) {
       handleIncomingAnnounce(data.stream, onAnnounce);
+    }
+  });
+
+  node.handle(PROTOCOL_MODERATION, (data: any) => {
+    if (onModeration) {
+      handleIncomingModeration(data.stream, onModeration);
     }
   });
 

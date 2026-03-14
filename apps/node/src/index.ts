@@ -1,4 +1,4 @@
-import { cosineSimilarity } from '@isc/core';
+import { cosineSimilarity, RateLimiter, RATE_LIMITS, encodePayload } from '@isc/core';
 import { nodeModel } from '@isc/adapters';
 
 import { createLibp2p } from 'libp2p';
@@ -8,16 +8,26 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { mplex } from '@libp2p/mplex';
 import { kadDHT } from '@libp2p/kad-dht';
 import { ping } from '@libp2p/ping';
+import { bootstrap } from '@libp2p/bootstrap';
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { identify } from '@libp2p/identify';
-import { handleIncomingChat, handleIncomingAnnounce, handleDelegateRequest, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_DELEGATE } from '@isc/protocol';
-import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
+import { handleIncomingChat, handleIncomingAnnounce, handleDelegateRequest, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_DELEGATE, PROTOCOL_DELEGATION_HEALTH, sendDelegationHealth } from '@isc/protocol';
+import { privateKeyFromProtobuf, generateKeyPair } from '@libp2p/crypto/keys';
+
+const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
 async function main() {
   console.log('ISC Node Supernode Starting...');
   console.log('Initializing core protocols...');
 
-  const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+  let requestsServed24h = 0;
+  let successfulRequests = 0;
+  let totalLatencyMs = 0;
+  const limiter = new RateLimiter();
+
+  // Periodically clean up rate limiter
+  setInterval(() => limiter.cleanup(), 60000);
+
   console.log(`Loading embedding model (${MODEL_ID})...`);
 
   try {
@@ -26,20 +36,79 @@ async function main() {
 
     // Generated static keypair for testing (PeerID: 12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk)
     const STATIC_KEY_B64 = 'CAESQBlT5Glzyad7fxjvTdhHOIiQsPOCE1EOnC6NCNMpnJ5kjmT/4mFrwuCjOYSr6+A7C9/4GLWV671llATT7cwB/Js=';
-    const privateKey = privateKeyFromProtobuf(Buffer.from(STATIC_KEY_B64, 'base64'));
+
+    // We can allow override of port and key via env vars for multiple nodes
+    const port = process.env.PORT || '9090';
+    let privateKey;
+
+    if (process.env.PEER_KEY_B64) {
+      privateKey = privateKeyFromProtobuf(Buffer.from(process.env.PEER_KEY_B64, 'base64'));
+    } else if (port === '9090') {
+      privateKey = privateKeyFromProtobuf(Buffer.from(STATIC_KEY_B64, 'base64'));
+    } else {
+      privateKey = await generateKeyPair('Ed25519');
+    }
+
+    const { getPublicKeyFromPeerId, generateKeypair } = await import('@isc/core');
+    const cryptoAPI = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : (await import('crypto')).webcrypto;
+
+    let appKeypair: any;
+
+    try {
+      // The most robust way to get a WebCrypto Keypair from libp2p keys in Node
+      // without fragile PKCS8 byte mapping is to use libp2p's built in conversion if possible,
+      // or to just dynamically generate a new one if it's not strictly necessary to tie it to the PeerId.
+      // However, we want signatures to match the PeerId.
+      // Since `privateKey` in `@libp2p/crypto` for Ed25519 doesn't export to WebCrypto easily,
+      // we'll safely extract the exact 32 bytes of the raw seed.
+      let rawPriv = privateKey.raw || (privateKey as any).bytes;
+      if (rawPriv.length > 32) {
+        rawPriv = rawPriv.slice(0, 32); // Ed25519 seeds are exactly 32 bytes
+      }
+
+      const pkcs8 = new Uint8Array(48);
+      pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+      pkcs8.set(rawPriv, 16);
+
+      const webCryptoPriv = await (cryptoAPI.subtle as any).importKey(
+        'pkcs8',
+        pkcs8,
+        { name: 'Ed25519' },
+        true,
+        ['sign']
+      );
+
+      const peerIdStr = await import('@libp2p/peer-id').then(m => m.peerIdFromKeys(privateKey.publicKey.bytes).toString());
+      const webCryptoPub = await getPublicKeyFromPeerId(peerIdStr);
+
+      appKeypair = {
+        publicKey: webCryptoPub,
+        privateKey: webCryptoPriv
+      };
+    } catch (e) {
+      console.warn("Failed to perfectly map libp2p key to WebCrypto, falling back to a fresh local keypair for delegation sigs.", e);
+      appKeypair = await generateKeypair();
+    }
 
     // Start P2P Node
     const node = await createLibp2p({
       privateKey,
       addresses: {
         // Listen on websockets for browser clients
-        listen: ['/ip4/0.0.0.0/tcp/9090/ws']
+        listen: [`/ip4/0.0.0.0/tcp/${port}/ws`]
       },
       transports: [
         webSockets()
       ],
       connectionEncrypters: [noise()],
       streamMuxers: [yamux(), mplex()],
+      peerDiscovery: [
+        bootstrap({
+          list: [
+            '/ip4/127.0.0.1/tcp/9090/ws/p2p/12D3KooWKQDPN7rmocU385fhK23ukUNHqMHuH9Y1SSSFqHK3qsMk'
+          ]
+        })
+      ],
       services: {
         ping: ping(),
         identify: identify(),
@@ -64,8 +133,20 @@ async function main() {
     });
 
     node.handle(PROTOCOL_ANNOUNCE, (data: any) => {
-      console.log('Received PROTOCOL_ANNOUNCE stream');
+      const peerId = data.connection.remotePeer.toString();
+      console.log('Received PROTOCOL_ANNOUNCE stream from', peerId);
+
+      if (!limiter.attempt(peerId, 'ANNOUNCE', RATE_LIMITS.ANNOUNCE)) {
+        console.warn(`Rate limit exceeded for ANNOUNCE from ${peerId}`);
+        data.stream.close();
+        return;
+      }
+
       handleIncomingAnnounce(data.stream, (msg) => {
+        if (msg.model && msg.model !== MODEL_ID) {
+          console.warn(`Dropped announcement due to model mismatch. Expected ${MODEL_ID}, got ${msg.model}`);
+          return;
+        }
         console.log('Supernode observed announce msg:', msg);
       });
     });
@@ -75,19 +156,72 @@ async function main() {
     });
 
     node.handle(PROTOCOL_DELEGATE, async (data: any) => {
-      console.log('Received PROTOCOL_DELEGATE request from', data.connection.remotePeer.toString());
-      // Re-initialize Keypair from the privateKey (naive cast for simulation, real implementation requires proper subtle.CryptoKey setup for libp2p)
-      const fakeKeypair = { publicKey: null as any, privateKey: null as any };
+      const peerId = data.connection.remotePeer.toString();
+      console.log('Received PROTOCOL_DELEGATE request from', peerId);
+
+      if (!limiter.attempt(peerId, 'DELEGATE_REQUEST', RATE_LIMITS.DELEGATE_REQUEST)) {
+        console.warn(`Rate limit exceeded for DELEGATE_REQUEST from ${peerId}`);
+        // Can either close the stream or just return
+        data.stream.close();
+        return;
+      }
 
       const capabilities = {
         maxConcurrentRequests: 10,
         modelAdapter: nodeModel,
-        supernodeKeypair: fakeKeypair
+        supernodeKeypair: appKeypair
       };
 
-      await handleDelegateRequest(data.stream, capabilities);
-      console.log('Successfully handled delegate request');
+      const startTime = Date.now();
+      requestsServed24h++;
+      try {
+        await handleDelegateRequest(data.stream, capabilities);
+        successfulRequests++;
+        console.log('Successfully handled delegate request');
+      } catch (e) {
+        console.error('Failed to handle delegate request', e);
+      } finally {
+        totalLatencyMs += (Date.now() - startTime);
+      }
     });
+
+    // Broadcast health metrics periodically
+    setInterval(async () => {
+      const connections = node.getConnections();
+      if (connections.length === 0) return;
+
+      const successRate = requestsServed24h > 0 ? successfulRequests / requestsServed24h : 1.0;
+      const avgLatencyMs = requestsServed24h > 0 ? totalLatencyMs / requestsServed24h : 50; // default 50ms
+
+      const unsignedPayload = {
+        type: 'delegation_health' as const,
+        peerID: node.peerId.toString(),
+        successRate,
+        avgLatencyMs,
+        requestsServed24h,
+        timestamp: Date.now()
+      };
+
+      const payloadBytes = encodePayload(unsignedPayload);
+      const signatureBytes = await privateKey.sign(payloadBytes);
+      const signatureB64 = Buffer.from(signatureBytes).toString('base64');
+
+      const healthPayload = {
+        ...unsignedPayload,
+        signature: signatureB64
+      };
+
+      console.log(`Broadcasting health metrics: ${successRate * 100}% success, ${avgLatencyMs}ms avg latency`);
+
+      for (const conn of connections) {
+        try {
+          const stream = await node.dialProtocol(conn.remotePeer, PROTOCOL_DELEGATION_HEALTH);
+          await sendDelegationHealth(stream, healthPayload);
+        } catch (e) {
+          // Peer doesn't support protocol or dial failed, ignore
+        }
+      }
+    }, 30000); // 30 seconds for easier testing, normally 5 mins
 
     node.addEventListener('peer:disconnect', (evt) => {
       console.log('Peer disconnected:', evt.detail.toString());

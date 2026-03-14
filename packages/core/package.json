@@ -11,5 +11,11 @@
   "devDependencies": {
     "typescript": "^5.0.0",
     "vitest": "^0.34.0"
+  },
+  "dependencies": {
+    "@libp2p/crypto": "^5.1.13",
+    "@libp2p/peer-id": "^6.0.4",
+    "@types/libsodium-wrappers": "^0.7.14",
+    "libsodium-wrappers": "^0.8.2"
   }
 }

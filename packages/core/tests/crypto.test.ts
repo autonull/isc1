@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { generateKeypair, sign, verify, encodePayload, Keypair } from '../src/crypto';
+import { generateKeypair, sign, verify, encodePayload, Keypair, verifySignature } from '../src/crypto';
 
 describe('Cryptography', () => {
   let keypairA: Keypair;
@@ -63,5 +63,76 @@ describe('Cryptography', () => {
     const isValid = await verify(tamperedEncoded, signature, keypairA.publicKey);
 
     expect(isValid).toBe(false);
+  });
+});
+
+describe('verifySignature', () => {
+  let keypairA: Keypair;
+  let keypairB: Keypair;
+
+  beforeAll(async () => {
+    keypairA = await generateKeypair();
+    keypairB = await generateKeypair();
+  });
+
+  const getSignatureBase64 = async (obj: any, keypair: Keypair): Promise<string> => {
+    const encoded = encodePayload(obj);
+    const signatureBytes = await sign(encoded, keypair);
+    const binaryString = Array.from(signatureBytes).map((b) => String.fromCharCode(b)).join('');
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(binaryString, 'binary').toString('base64');
+    } else if (typeof globalThis.btoa === 'function') {
+      return globalThis.btoa(binaryString);
+    } else {
+      throw new Error('Base64 encoding not available');
+    }
+  };
+
+  it('returns true for a valid signature', async () => {
+    const obj = { data: 'test', type: 'announce' };
+    const signatureBase64 = await getSignatureBase64(obj, keypairA);
+    const signedObj = { ...obj, signature: signatureBase64 };
+
+    const isValid = await verifySignature(signedObj, keypairA.publicKey);
+    expect(isValid).toBe(true);
+  });
+
+  it('returns false for tampered payload', async () => {
+    const obj = { data: 'test', type: 'announce' };
+    const signatureBase64 = await getSignatureBase64(obj, keypairA);
+    const signedObj = { ...obj, data: 'tampered', signature: signatureBase64 };
+
+    const isValid = await verifySignature(signedObj, keypairA.publicKey);
+    expect(isValid).toBe(false);
+  });
+
+  it('returns false for missing signature field', async () => {
+    const obj = { data: 'test', type: 'announce' };
+    const isValid = await verifySignature(obj, keypairA.publicKey);
+    expect(isValid).toBe(false);
+  });
+
+  it('returns false for wrong key', async () => {
+    const obj = { data: 'test', type: 'announce' };
+    const signatureBase64 = await getSignatureBase64(obj, keypairA);
+    const signedObj = { ...obj, signature: signatureBase64 };
+
+    // Signed by A, verifying with B
+    const isValid = await verifySignature(signedObj, keypairB.publicKey);
+    expect(isValid).toBe(false);
+  });
+
+  it('returns false for replay detection (same requestID)', async () => {
+    const obj = { data: 'test', type: 'announce', requestID: 'uuid-1234' };
+    const signatureBase64 = await getSignatureBase64(obj, keypairA);
+    const signedObj = { ...obj, signature: signatureBase64 };
+
+    // First time should be valid
+    const isValid1 = await verifySignature(signedObj, keypairA.publicKey);
+    expect(isValid1).toBe(true);
+
+    // Second time with same requestID should be rejected as replay
+    const isValid2 = await verifySignature(signedObj, keypairA.publicKey);
+    expect(isValid2).toBe(false);
   });
 });

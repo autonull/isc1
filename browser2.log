@@ -1,0 +1,44 @@
+
+> @isc/browser@0.1.0 dev
+> vite
+
+Port 5173 is in use, trying another one...
+Port 5174 is in use, trying another one...
+
+  VITE v4.5.14  ready in 375 ms
+
+  ➜  Local:   http://localhost:5175/
+  ➜  Network: use --host to expose
+11:05:05 PM [vite] page reload src/main.ts
+11:05:33 PM [vite] page reload src/main.ts
+11:06:23 PM [vite] page reload src/main.ts
+11:07:14 PM [vite] page reload src/main.ts
+11:12:02 PM [vite] page reload src/main.ts
+11:12:46 PM [vite] page reload src/main.ts
+11:13:41 PM [vite] page reload src/main.ts
+11:14:09 PM [vite] page reload /app/packages/core/dist/crypto.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/index.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/matching.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/math.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/ratelimit.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/reputation.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/sampling.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/semantic.js
+11:14:09 PM [vite] page reload /app/packages/core/dist/social.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/browser/index.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/browser/model.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/browser/storage.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/browser/tier.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/index.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/interfaces/index.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/node/index.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/node/model.js
+11:14:09 PM [vite] page reload /app/packages/adapters/dist/node/storage.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/announce.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/chat.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/delegate.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/delegation_health.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/index.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/messages.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/moderation.js
+11:14:09 PM [vite] page reload /app/packages/protocol/dist/post.js
