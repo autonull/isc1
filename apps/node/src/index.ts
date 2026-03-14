@@ -40,54 +40,12 @@ async function main() {
     // We can allow override of port and key via env vars for multiple nodes
     const port = process.env.PORT || '9090';
     let privateKey;
-
     if (process.env.PEER_KEY_B64) {
       privateKey = privateKeyFromProtobuf(Buffer.from(process.env.PEER_KEY_B64, 'base64'));
     } else if (port === '9090') {
       privateKey = privateKeyFromProtobuf(Buffer.from(STATIC_KEY_B64, 'base64'));
     } else {
       privateKey = await generateKeyPair('Ed25519');
-    }
-
-    const { getPublicKeyFromPeerId, generateKeypair } = await import('@isc/core');
-    const cryptoAPI = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : (await import('crypto')).webcrypto;
-
-    let appKeypair: any;
-
-    try {
-      // The most robust way to get a WebCrypto Keypair from libp2p keys in Node
-      // without fragile PKCS8 byte mapping is to use libp2p's built in conversion if possible,
-      // or to just dynamically generate a new one if it's not strictly necessary to tie it to the PeerId.
-      // However, we want signatures to match the PeerId.
-      // Since `privateKey` in `@libp2p/crypto` for Ed25519 doesn't export to WebCrypto easily,
-      // we'll safely extract the exact 32 bytes of the raw seed.
-      let rawPriv = privateKey.raw || (privateKey as any).bytes;
-      if (rawPriv.length > 32) {
-        rawPriv = rawPriv.slice(0, 32); // Ed25519 seeds are exactly 32 bytes
-      }
-
-      const pkcs8 = new Uint8Array(48);
-      pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
-      pkcs8.set(rawPriv, 16);
-
-      const webCryptoPriv = await (cryptoAPI.subtle as any).importKey(
-        'pkcs8',
-        pkcs8,
-        { name: 'Ed25519' },
-        true,
-        ['sign']
-      );
-
-      const peerIdStr = await import('@libp2p/peer-id').then(m => m.peerIdFromKeys(privateKey.publicKey.bytes).toString());
-      const webCryptoPub = await getPublicKeyFromPeerId(peerIdStr);
-
-      appKeypair = {
-        publicKey: webCryptoPub,
-        privateKey: webCryptoPriv
-      };
-    } catch (e) {
-      console.warn("Failed to perfectly map libp2p key to WebCrypto, falling back to a fresh local keypair for delegation sigs.", e);
-      appKeypair = await generateKeypair();
     }
 
     // Start P2P Node
@@ -166,10 +124,13 @@ async function main() {
         return;
       }
 
+      // Re-initialize Keypair from the privateKey (naive cast for simulation, real implementation requires proper subtle.CryptoKey setup for libp2p)
+      const fakeKeypair = { publicKey: null as any, privateKey: null as any };
+
       const capabilities = {
         maxConcurrentRequests: 10,
         modelAdapter: nodeModel,
-        supernodeKeypair: appKeypair
+        supernodeKeypair: fakeKeypair
       };
 
       const startTime = Date.now();

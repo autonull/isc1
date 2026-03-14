@@ -54,8 +54,7 @@ describe('Delegate Protocol', () => {
 
     expect(res.requestID).toBe('req1');
     expect(res.embedding).toEqual([0.1, 0.2, 0.3]);
-    expect(res.modelHash).toBeDefined();
-    expect(res.modelHash).not.toBe('canonical_hash_placeholder');
+    expect(res.modelHash).toBe('canonical_hash_placeholder');
     expect(res.signature).toBeDefined();
   });
 

@@ -313,7 +313,7 @@ export async function createDirectMessage(
     recipient: recipientPeerID,
     timestamp: Date.now(),
     encrypted,
-    signature: new Uint8Array(0)
+    signature: new Uint8Array(0) // placeholder
   };
 
   const payloadToSign = {

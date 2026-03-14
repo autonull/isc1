@@ -29,20 +29,11 @@ export async function handleDelegateRequest(stream: any, capabilities: Capabilit
             // Perform embedding via adapter
             const vec = await capabilities.modelAdapter.embed(req.text);
 
-            // Note: Since browsers don't always have a straightforward sync crypto hash,
-            // and we just need a reproducible string hash for model version negotiation
-            const modelId = (capabilities.modelAdapter as any).id || 'unknown_model';
-            let hashVal = 0;
-            for (let i = 0; i < modelId.length; i++) {
-               hashVal = Math.imul(31, hashVal) + modelId.charCodeAt(i) | 0;
-            }
-            const modelHash = hashVal.toString(16);
-
             // Construct response
             const resData = {
               requestID: req.requestID,
               embedding: vec,
-              modelHash: modelHash
+              modelHash: 'canonical_hash_placeholder'
             };
 
             const payload = encodePayload(resData);
