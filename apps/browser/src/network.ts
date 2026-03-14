@@ -26,7 +26,9 @@ export async function initNode(_keypair: Keypair, onChat?: (msg: any) => void, o
     transports: [
       webSockets(), // Needed to connect to bootstrap relays
       webRTC(),      // Needed for direct browser-to-browser chat
-      circuitRelayTransport({})
+      circuitRelayTransport({
+        discoverRelays: 3 // Discover and use up to 3 relays for NAT traversal
+      } as any)
     ],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux(), mplex()],

@@ -1003,9 +1003,12 @@ export function renderRecentPosts() {
             follower: peerId,
             followee: post.author,
             timestamp: Date.now(),
-            signature: new Uint8Array(0) // placeholder
+            signature: new Uint8Array(0)
           };
-          const encoded = encodePayload(event);
+
+          // Sign the event properly
+          const { signature, ...eventWithoutSig } = event;
+          const encoded = encodePayload(eventWithoutSig);
           event.signature = await sign(encoded, appState.keypair);
 
           const topic = `/isc/follow/${post.author}`;
@@ -1053,6 +1056,29 @@ export function renderRecentPosts() {
     const content = document.createElement('p');
     content.className = 'match-desc';
     content.textContent = post.content;
+
+    if (post.ipfsLink) {
+      try {
+        const parsedUrl = new URL(post.ipfsLink);
+        const protocol = parsedUrl.protocol.toLowerCase();
+
+        if (protocol === 'http:' || protocol === 'https:' || protocol === 'ipfs:') {
+          const ipfsEl = document.createElement('div');
+          ipfsEl.style.marginTop = '0.5rem';
+          ipfsEl.style.fontSize = 'var(--font-size-sm)';
+          const linkEl = document.createElement('a');
+          linkEl.href = post.ipfsLink;
+          linkEl.target = '_blank';
+          linkEl.rel = 'noopener noreferrer';
+          linkEl.textContent = '📎 IPFS Link';
+          linkEl.style.color = 'var(--primary)';
+          ipfsEl.appendChild(linkEl);
+          content.appendChild(ipfsEl);
+        }
+      } catch (e) {
+        console.warn('Invalid IPFS link URL format:', post.ipfsLink);
+      }
+    }
 
     // Add reaction bar
     const reactionBar = document.createElement('div');
@@ -1265,8 +1291,10 @@ export async function fetchAndRenderProfile(peerId: string) {
   const titleEl = document.getElementById('profile-view-title');
   const peerIdEl = document.getElementById('profile-view-peer-id');
   const bioEl = document.getElementById('profile-view-bio');
+  const customBioEl = document.getElementById('profile-view-custom-bio');
   const followersEl = document.getElementById('profile-view-followers');
   const followingEl = document.getElementById('profile-view-following');
+  const btnEditProfile = document.getElementById('btn-edit-profile');
 
   // Currently we do not dynamically query follower count over DHT in phase 1, but we reset it to 0
   if (followersEl) followersEl.textContent = '0';
@@ -1275,7 +1303,7 @@ export async function fetchAndRenderProfile(peerId: string) {
   const channelListEl = document.getElementById('profile-view-channel-list');
   const channelCountEl = document.getElementById('profile-view-channel-count');
 
-  if (!peerIdEl || !bioEl || !channelListEl || !channelCountEl) return;
+  if (!peerIdEl || !bioEl || !customBioEl || !channelListEl || !channelCountEl) return;
 
   const isSelf = appState.p2pNode && appState.p2pNode.peerId.toString() === peerId;
 
@@ -1283,8 +1311,13 @@ export async function fetchAndRenderProfile(peerId: string) {
     titleEl.textContent = isSelf ? 'Your Profile' : 'Peer Profile';
   }
 
+  if (btnEditProfile) {
+     btnEditProfile.style.display = isSelf ? 'inline-block' : 'none';
+  }
+
   peerIdEl.textContent = peerId;
   bioEl.textContent = 'Fetching semantic profile...';
+  customBioEl.textContent = isSelf ? 'Loading...' : 'Fetching bio...';
   channelListEl.innerHTML = '';
   channelCountEl.textContent = '0';
 
@@ -1326,6 +1359,11 @@ export async function fetchAndRenderProfile(peerId: string) {
         latestEmbedding: embedding
       };
     });
+
+    const customBio = await browserStorage.get<string>('isc:profile:bio');
+    profile.bio = customBio || '';
+    customBioEl.textContent = profile.bio || 'No bio provided.';
+
   } else {
     // Try to query their channels from the DHT
     try {
@@ -1338,15 +1376,21 @@ export async function fetchAndRenderProfile(peerId: string) {
            if (event.name === 'VALUE') {
              try {
                 const str = decoder.decode(event.value);
-                const channels = JSON.parse(str);
-                if (Array.isArray(channels)) {
-                  profile.channels = channels;
+                const payload = JSON.parse(str);
+
+                // Backwards compat with old array payload vs new object payload
+                if (Array.isArray(payload)) {
+                   profile.channels = payload;
+                } else if (payload.channels) {
+                   profile.channels = payload.channels;
+                   profile.bio = payload.bio || '';
                 }
              } catch (e) {
-                console.warn('Failed to parse peer profile channels');
+                console.warn('Failed to parse peer profile payload');
              }
            }
         }
+        customBioEl.textContent = profile.bio || 'No bio provided.';
       }
     } catch (e) {
       console.warn("Could not fetch peer profile from DHT");
@@ -2174,6 +2218,7 @@ function setupCompose() {
 
   const btnPostInline = document.getElementById('btn-publish-post-inline');
   const inputPostInline = document.getElementById('compose-post-input') as HTMLInputElement;
+  const inputPostIpfs = document.getElementById('compose-post-ipfs') as HTMLInputElement;
 
   if (btnPostInline && inputPostInline) {
     btnPostInline.addEventListener('click', async () => {
@@ -2182,8 +2227,14 @@ function setupCompose() {
         return;
       }
       const desc = inputPostInline.value.trim();
+      const ipfsLink = inputPostIpfs ? inputPostIpfs.value.trim() : '';
 
       if (!desc) {
+        return;
+      }
+
+      if (desc.length > 280) {
+        alert("Post exceeds the 280-character limit.");
         return;
       }
 
@@ -2195,7 +2246,18 @@ function setupCompose() {
         const embedding = await embedFn(desc);
 
         const peerId = appState.p2pNode.peerId.toString();
-        const post = await createSignedPost(appState.keypair!, peerId, desc, 'temp-id', embedding);
+        const channelID = appState.activeChannelId || 'unknown-channel';
+        const post = await createSignedPost(
+          appState.keypair!,
+          peerId,
+          desc,
+          channelID,
+          embedding,
+          86400000,
+          undefined,
+          undefined,
+          ipfsLink || undefined
+        );
 
         const isOffline = !navigator.onLine;
         post.isPending = isOffline;
@@ -2206,6 +2268,7 @@ function setupCompose() {
 
         // Reset form immediately for optimistic feel
         inputPostInline.value = '';
+        if (inputPostIpfs) inputPostIpfs.value = '';
 
         if (isOffline) {
           await enqueueOfflineAction({ type: 'post', post });
@@ -2339,6 +2402,49 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }, 10000);
 
+    // Periodically publish profile to DHT
+    setInterval(async () => {
+       if (navigator.onLine && appState.p2pNode) {
+          try {
+             const peerId = appState.p2pNode.peerId.toString();
+             const keyString = `/isc/profile/channels/${peerId}`;
+             const keyBytes = new TextEncoder().encode(keyString);
+
+             // Extract simplified channel data
+             const channelsToPublish = appState.channels.map(ch => {
+               const embedding = ch.distributions && ch.distributions.length > 0
+                 ? ch.distributions[0].mu
+                 : [];
+               return {
+                 channelID: ch.id,
+                 name: ch.name,
+                 description: ch.description,
+                 embedding: embedding,
+                 postCount: 0,
+                 latestEmbedding: embedding
+               };
+             });
+
+             const customBio = await browserStorage.get<string>('isc:profile:bio');
+
+             const payload = {
+                channels: channelsToPublish,
+                bio: customBio || ''
+             };
+
+             const encoded = new TextEncoder().encode(JSON.stringify(payload));
+
+             if (appState.p2pNode.services && appState.p2pNode.services.dht) {
+                // Fire and forget DHT put
+                for await (const _ of appState.p2pNode.services.dht.put(keyBytes, encoded)) {}
+                console.log('Published profile to DHT');
+             }
+          } catch(e) {
+             console.warn('Failed to publish profile to DHT', e);
+          }
+       }
+    }, 30 * 1000); // Every 30 seconds for immediate discovery
+
     // Periodically clean up rate limiter memory and persist state
     setInterval(() => {
       appState.rateLimiter.cleanup();
@@ -2445,6 +2551,38 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchAndRenderProfile(appState.p2pNode.peerId.toString());
      }
   });
+
+  // Profile Editor UI Logic
+  const btnEditProfile = document.getElementById('btn-edit-profile');
+  const btnSaveProfile = document.getElementById('btn-save-profile');
+  const btnCancelEditProfile = document.getElementById('btn-cancel-edit-profile');
+  const profileEditorContainer = document.getElementById('profile-editor-container');
+  const profileEditBioInput = document.getElementById('profile-edit-bio-input') as HTMLTextAreaElement;
+
+  if (btnEditProfile && profileEditorContainer && profileEditBioInput) {
+     btnEditProfile.addEventListener('click', async () => {
+        profileEditorContainer.style.display = 'block';
+        const currentBio = await browserStorage.get<string>('isc:profile:bio');
+        profileEditBioInput.value = currentBio || '';
+     });
+  }
+
+  if (btnCancelEditProfile && profileEditorContainer) {
+     btnCancelEditProfile.addEventListener('click', () => {
+        profileEditorContainer.style.display = 'none';
+     });
+  }
+
+  if (btnSaveProfile && profileEditorContainer && profileEditBioInput) {
+     btnSaveProfile.addEventListener('click', async () => {
+        const newBio = profileEditBioInput.value.trim();
+        await browserStorage.set('isc:profile:bio', newBio);
+        profileEditorContainer.style.display = 'none';
+        if (appState.p2pNode) {
+           fetchAndRenderProfile(appState.p2pNode.peerId.toString());
+        }
+     });
+  }
 
 });
 

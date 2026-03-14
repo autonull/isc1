@@ -659,6 +659,56 @@ Fallback: JSON for debugging.
 
 ---
 
+## Interoperability Payload Schemas
+
+To ensure independent client implementations can interact with the ISC network, all payloads must strictly adhere to the following schemas before being serialized to CBOR and optionally signed.
+
+### Announcement Schema (`PROTOCOL_ANNOUNCE`)
+```json
+{
+  "peerID": "string (base58btc)",
+  "channelID": "string",
+  "model": "string (e.g. 'Xenova/all-MiniLM-L6-v2')",
+  "vec": [0.123, -0.456, ...],
+  "relTag": "string (optional)",
+  "ttl": 300,
+  "updatedAt": 17182938491,
+  "signature": "Uint8Array (ed25519)"
+}
+```
+
+### Post Schema (`PROTOCOL_POST`)
+```json
+{
+  "type": "post",
+  "postID": "string",
+  "author": "string (peerID)",
+  "content": "string (max 280 chars)",
+  "channelID": "string",
+  "embedding": [0.123, -0.456, ...],
+  "timestamp": 17182938491,
+  "ttl": 86400,
+  "quoteOf": "string (optional postID)",
+  "replyTo": "string (optional postID)",
+  "ipfsLink": "string (optional http/https/ipfs url)",
+  "signature": "Uint8Array (ed25519)"
+}
+```
+
+### Direct Message Schema (`PROTOCOL_DM`)
+```json
+{
+  "type": "dm",
+  "sender": "string (peerID)",
+  "recipient": "string (peerID)",
+  "timestamp": 17182938491,
+  "encrypted": "Uint8Array (libsodium crypto_box_easy)",
+  "signature": "Uint8Array (ed25519)"
+}
+```
+
+---
+
 ## Bootstrap Peers
 
 Default public libp2p relays:

@@ -30,15 +30,15 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 - [ ] Playwright E2E suite for flows (channel create, match, chat init)
 
 ### 3. Bring Social Layer Parity
-- [ ] Posts (280 char + optional IPFS link)
-- [ ] Semantic "For You" feed via ANN
-- [ ] Likes/reposts/replies/quotes (implement fused-vector quoting)
-- [ ] Simple profiles (mean vector)
+- [x] Posts (280 char + optional IPFS link)
+- [x] Semantic "For You" feed via ANN
+- [x] Likes/reposts/replies/quotes (implement fused-vector quoting)
+- [x] Simple profiles (mean vector)
 
 ### 4. Final Hardening
-- [ ] Run internal swarms (50+ virtual peers)
-- [ ] Protocol interop validation prep (document announce formats)
-- [ ] Update README with Quick Start scripts
+- [x] Run internal swarms (50+ virtual peers)
+- [x] Protocol interop validation prep (document announce formats)
+- [x] Update README with Quick Start scripts
 
 ---
 
@@ -59,7 +59,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Model version negotiation + compatibility shards | [x] | P1 |
 | Device tier auto-detection + delegate mode UI | [x] | P1 |
 | Threat model validation + security audit (community) | [x] | P1 |
-| NAT traversal improvements (circuit relay pool) | [ ] | P2 |
+| NAT traversal improvements (circuit relay pool) | [x] | P2 |
 
 ### Success Criteria
 
@@ -99,7 +99,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Offline-first: queue + background sync | [x] | P1 |
 | Delegation health metrics + supernode ranking | [x] | P1 |
 | PWA — installable on mobile, offline-capable shell | [x] | P1 |
-| IPFS deployment — zero-infra hosting | [ ] | P2 |
+| IPFS deployment — zero-infra hosting | [x] | P2 |
 | Community model registry + migration tooling | [ ] | P2 |
 
 ### Success Criteria

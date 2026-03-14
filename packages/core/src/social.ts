@@ -73,6 +73,9 @@ export interface SignedPost {
 
   // Optional Reply reference
   replyTo?: string; // targetPostID
+
+  // Optional IPFS link
+  ipfsLink?: string;
 }
 
 export interface PostPayload {
@@ -86,6 +89,7 @@ export interface PostPayload {
   ttl: number;
   quoteOf?: string;
   replyTo?: string;
+  ipfsLink?: string;
 }
 
 export interface ReactionPayload {
@@ -196,7 +200,8 @@ export async function createSignedPost(
   embedding: number[],
   ttl: number = 86400000, // default 24h
   quoteOf?: string,
-  replyTo?: string
+  replyTo?: string,
+  ipfsLink?: string
 ): Promise<SignedPost> {
   const payload: PostPayload = {
     type: 'post',
@@ -208,7 +213,8 @@ export async function createSignedPost(
     timestamp: Date.now(),
     ttl,
     ...(quoteOf ? { quoteOf } : {}),
-    ...(replyTo ? { replyTo } : {})
+    ...(replyTo ? { replyTo } : {}),
+    ...(ipfsLink ? { ipfsLink } : {})
   };
 
   const encoded = encodePayload(payload);
@@ -279,7 +285,8 @@ export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promis
     timestamp: post.timestamp,
     ttl: post.ttl,
     ...(post.quoteOf ? { quoteOf: post.quoteOf } : {}),
-    ...(post.replyTo ? { replyTo: post.replyTo } : {})
+    ...(post.replyTo ? { replyTo: post.replyTo } : {}),
+    ...(post.ipfsLink ? { ipfsLink: post.ipfsLink } : {})
   };
   const encoded = encodePayload(payload);
   return await verify(encoded, post.signature, publicKey);
@@ -306,7 +313,7 @@ export async function createDirectMessage(
     recipient: recipientPeerID,
     timestamp: Date.now(),
     encrypted,
-    signature: new Uint8Array(0) // placeholder
+    signature: new Uint8Array(0)
   };
 
   const payloadToSign = {
