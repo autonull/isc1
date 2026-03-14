@@ -73,6 +73,9 @@ export interface SignedPost {
 
   // Optional Reply reference
   replyTo?: string; // targetPostID
+
+  // Optional IPFS link
+  ipfsLink?: string;
 }
 
 export interface PostPayload {
@@ -86,6 +89,7 @@ export interface PostPayload {
   ttl: number;
   quoteOf?: string;
   replyTo?: string;
+  ipfsLink?: string;
 }
 
 export interface ReactionPayload {
@@ -99,12 +103,80 @@ export interface SignedReaction extends ReactionPayload {
   signature: Uint8Array;
 }
 
+export interface CommunityChannel {
+  channelID: string;
+  name: string;
+  description: string;
+  members: string[];    // peerIDs
+  coEditors: string[];  // peerIDs with edit permissions
+  embedding: number[];  // Aggregated mean vector
+  createdAt: number;
+  signature: Uint8Array;
+}
+
+export interface CommunityJoinEvent {
+  type: 'community_join';
+  channelID: string;
+  peerID: string;
+  timestamp: number;
+  signature: Uint8Array;
+}
+
 export interface CommunityReport {
   reporter: string;
   targetPostID: string;
   reason: 'off-topic' | 'spam' | 'harassment';
   evidence: string;
   signature: Uint8Array;
+}
+
+
+
+export async function createCommunityChannel(
+  keypair: Keypair,
+  name: string,
+  description: string,
+  embedding: number[],
+  creatorPeerID: string
+): Promise<CommunityChannel> {
+  const payload = {
+    channelID: 'comm_' + Math.random().toString(36).substring(2, 10),
+    name,
+    description,
+    members: [creatorPeerID],
+    coEditors: [creatorPeerID],
+    embedding,
+    createdAt: Date.now()
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature
+  };
+}
+
+export async function createCommunityJoinEvent(
+  keypair: Keypair,
+  channelID: string,
+  peerID: string
+): Promise<CommunityJoinEvent> {
+  const payload = {
+    type: 'community_join' as const,
+    channelID,
+    peerID,
+    timestamp: Date.now()
+  };
+
+  const encoded = encodePayload(payload);
+  const signature = await sign(encoded, keypair);
+
+  return {
+    ...payload,
+    signature
+  };
 }
 
 export async function createCommunityReport(
@@ -128,7 +200,8 @@ export async function createSignedPost(
   embedding: number[],
   ttl: number = 86400000, // default 24h
   quoteOf?: string,
-  replyTo?: string
+  replyTo?: string,
+  ipfsLink?: string
 ): Promise<SignedPost> {
   const payload: PostPayload = {
     type: 'post',
@@ -140,7 +213,8 @@ export async function createSignedPost(
     timestamp: Date.now(),
     ttl,
     ...(quoteOf ? { quoteOf } : {}),
-    ...(replyTo ? { replyTo } : {})
+    ...(replyTo ? { replyTo } : {}),
+    ...(ipfsLink ? { ipfsLink } : {})
   };
 
   const encoded = encodePayload(payload);
@@ -211,7 +285,8 @@ export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promis
     timestamp: post.timestamp,
     ttl: post.ttl,
     ...(post.quoteOf ? { quoteOf: post.quoteOf } : {}),
-    ...(post.replyTo ? { replyTo: post.replyTo } : {})
+    ...(post.replyTo ? { replyTo: post.replyTo } : {}),
+    ...(post.ipfsLink ? { ipfsLink: post.ipfsLink } : {})
   };
   const encoded = encodePayload(payload);
   return await verify(encoded, post.signature, publicKey);
@@ -238,7 +313,7 @@ export async function createDirectMessage(
     recipient: recipientPeerID,
     timestamp: Date.now(),
     encrypted,
-    signature: new Uint8Array(0) // placeholder
+    signature: new Uint8Array(0)
   };
 
   const payloadToSign = {

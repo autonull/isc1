@@ -6,6 +6,7 @@ export const PROTOCOL_DELEGATION_HEALTH = '/isc/delegation_health/1.0';
 export const PROTOCOL_REACTION = '/isc/reaction/1.0';
 export const PROTOCOL_PROFILE = '/isc/profile/1.0';
 export const PROTOCOL_DM = '/isc/dm/1.0';
+export const PROTOCOL_COMMUNITY_JOIN = '/isc/community_join/1.0';
 
 export interface DelegationHealth {
   type: 'delegation_health';

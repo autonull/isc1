@@ -7,3 +7,4 @@ verify.py
 *_output.log
 supernode.log
 \n# Logs\n*.log\nnode_output.log
+test-results/
