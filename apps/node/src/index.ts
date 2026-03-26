@@ -10,7 +10,7 @@ import { kadDHT } from '@libp2p/kad-dht';
 import { ping } from '@libp2p/ping';
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { identify } from '@libp2p/identify';
-import { handleIncomingChat, handleIncomingAnnounce, handleDelegateRequest, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_DELEGATE } from '@isc/protocol';
+import { handleIncomingChat, handleIncomingAnnounce, handleDelegateRequest, PROTOCOL_CHAT, PROTOCOL_ANNOUNCE, PROTOCOL_DELEGATE, PROTOCOL_DELEGATION_HEALTH, sendDelegationHealth } from '@isc/protocol';
 import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
@@ -18,6 +18,10 @@ const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 async function main() {
   console.log('ISC Node Supernode Starting...');
   console.log('Initializing core protocols...');
+
+  let requestsServed24h = 0;
+  let successfulRequests = 0;
+  let totalLatencyMs = 0;
 
   console.log(`Loading embedding model (${MODEL_ID})...`);
 
@@ -90,9 +94,48 @@ async function main() {
         supernodeKeypair: fakeKeypair
       };
 
-      await handleDelegateRequest(data.stream, capabilities);
-      console.log('Successfully handled delegate request');
+      const startTime = Date.now();
+      requestsServed24h++;
+      try {
+        await handleDelegateRequest(data.stream, capabilities);
+        successfulRequests++;
+        console.log('Successfully handled delegate request');
+      } catch (e) {
+        console.error('Failed to handle delegate request', e);
+      } finally {
+        totalLatencyMs += (Date.now() - startTime);
+      }
     });
+
+    // Broadcast health metrics periodically
+    setInterval(async () => {
+      const connections = node.getConnections();
+      if (connections.length === 0) return;
+
+      const successRate = requestsServed24h > 0 ? successfulRequests / requestsServed24h : 1.0;
+      const avgLatencyMs = requestsServed24h > 0 ? totalLatencyMs / requestsServed24h : 50; // default 50ms
+
+      const healthPayload = {
+        type: 'delegation_health' as const,
+        peerID: node.peerId.toString(),
+        successRate,
+        avgLatencyMs,
+        requestsServed24h,
+        timestamp: Date.now(),
+        signature: 'dummy-signature-for-now' // In phase 2, properly sign it
+      };
+
+      console.log(`Broadcasting health metrics: ${successRate * 100}% success, ${avgLatencyMs}ms avg latency`);
+
+      for (const conn of connections) {
+        try {
+          const stream = await node.dialProtocol(conn.remotePeer, PROTOCOL_DELEGATION_HEALTH);
+          await sendDelegationHealth(stream, healthPayload);
+        } catch (e) {
+          // Peer doesn't support protocol or dial failed, ignore
+        }
+      }
+    }, 30000); // 30 seconds for easier testing, normally 5 mins
 
     node.addEventListener('peer:disconnect', (evt) => {
       console.log('Peer disconnected:', evt.detail.toString());

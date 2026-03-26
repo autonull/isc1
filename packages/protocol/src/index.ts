@@ -4,3 +4,4 @@ export * from './delegate.js';
 export * from './announce.js';
 export * from './post.js';
 export * from './moderation.js';
+export * from './delegation_health.js';

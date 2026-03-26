@@ -1,5 +1,5 @@
-import { Keypair, sign, encodePayload } from './crypto.js';
-import { cosineSimilarity } from './math.js';
+import { Keypair, sign, encodePayload, verify } from './crypto.js';
+import { cosineSimilarity, lshHash } from './math.js';
 import { Distribution } from './semantic.js';
 
 export interface SignedPost {
@@ -84,4 +84,30 @@ export function checkPostCoherence(post: SignedPost, channelDistributions: Distr
   }
   const channelEmbedding = channelDistributions[0].mu;
   return cosineSimilarity(channelEmbedding, post.embedding);
+}
+
+/**
+ * Generates the DHT keys for a given post embedding.
+ */
+export function getPostDHTKeys(embedding: number[], modelHash: string, numHashes: number = 5): string[] {
+  const hashes = lshHash(embedding, modelHash, numHashes);
+  return hashes.map(hash => `/isc/post/${modelHash.replace(/\//g, '_')}/${hash}`);
+}
+
+/**
+ * Validates a signed post.
+ */
+export async function verifyPost(post: SignedPost, publicKey: CryptoKey): Promise<boolean> {
+  const payload: PostPayload = {
+    type: post.type,
+    postID: post.postID,
+    author: post.author,
+    content: post.content,
+    channelID: post.channelID,
+    embedding: post.embedding,
+    timestamp: post.timestamp,
+    ttl: post.ttl
+  };
+  const encoded = encodePayload(payload);
+  return await verify(encoded, post.signature, publicKey);
 }
