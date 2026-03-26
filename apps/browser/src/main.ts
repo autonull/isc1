@@ -5,7 +5,8 @@ import { CID } from 'multiformats/cid';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { registerSW } from 'virtual:pwa-register';
 
-import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth } from '@isc/protocol';
+import { PROTOCOL_DELEGATE, requestDelegation, PROTOCOL_CHAT, sendChatMessage, handleIncomingChat, PROTOCOL_POST, handleIncomingPost, sendPostMessage, PROTOCOL_MODERATION, sendModerationMessage, PROTOCOL_DELEGATION_HEALTH, handleDelegationHealth, PROTOCOL_REACTION, handleIncomingReaction, sendReactionMessage } from '@isc/protocol';
+import { createSignedReaction } from '@isc/core';
 
 export interface SavedChannel extends Channel {
   distributions?: Distribution[];
@@ -35,6 +36,8 @@ export const appState: {
   offlineQueue: any[];
   rateLimiter: RateLimiter;
   supernodeHealth: { [peerId: string]: any };
+  activeFeed: 'for-you' | 'following';
+  followedPeers: string[];
 } = {
   tier: 'unknown',
   allowDelegation: false,
@@ -50,7 +53,9 @@ export const appState: {
   reputation: {},
   offlineQueue: [],
   rateLimiter: new RateLimiter(),
-  supernodeHealth: {}
+  supernodeHealth: {},
+  activeFeed: 'for-you',
+  followedPeers: []
 };
 
 async function loadSavedData() {
@@ -76,8 +81,21 @@ async function loadSavedData() {
     if (savedQueue && Array.isArray(savedQueue)) {
       appState.offlineQueue = savedQueue;
     }
+
+    const savedFollowedPeers = await browserStorage.get<string[]>('isc:followed_peers');
+    if (savedFollowedPeers && Array.isArray(savedFollowedPeers)) {
+      appState.followedPeers = savedFollowedPeers;
+    }
   } catch (err) {
     console.error('Failed to load saved data:', err);
+  }
+}
+
+export async function saveFollowedPeers() {
+  try {
+    await browserStorage.set('isc:followed_peers', appState.followedPeers);
+  } catch (err) {
+    console.error('Failed to save followed peers:', err);
   }
 }
 
@@ -299,6 +317,23 @@ async function initISC() {
         appState.receivedPosts.unshift(post);
         recordInteraction(post.author, 'post_reaction', true);
         renderRecentPosts();
+      });
+    });
+
+    appState.p2pNode.handle(PROTOCOL_REACTION, (data: any) => {
+      handleIncomingReaction(data.stream, (reaction) => {
+        console.log('Received reaction:', reaction);
+        const post = appState.receivedPosts.find(p => p.postID === reaction.targetPostID);
+        if (post) {
+          if (reaction.type === 'like') {
+            post.likes = post.likes || [];
+            if (!post.likes.includes(reaction.author)) post.likes.push(reaction.author);
+          } else if (reaction.type === 'repost') {
+            post.reposts = post.reposts || [];
+            if (!post.reposts.includes(reaction.author)) post.reposts.push(reaction.author);
+          }
+          renderRecentPosts();
+        }
       });
     });
 
@@ -637,27 +672,37 @@ export function renderRecentPosts() {
   const container = document.getElementById('discover-recent-posts');
   if (!container) return;
 
-  if (appState.receivedPosts.length === 0) {
-    container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>';
-    return;
-  }
 
   const activeChannel = appState.channels.find(c => c.id === appState.activeChannelId);
 
-  // Score and sort posts by similarity to the current channel
+  // Filter posts based on active feed
   let postsToRender = [...appState.receivedPosts];
-  if (activeChannel && activeChannel.distributions) {
+  if (appState.activeFeed === 'following') {
+    postsToRender = postsToRender.filter(p => appState.followedPeers.includes(p.author));
+  }
+
+  // Score and sort posts by similarity to the current channel
+  if (appState.activeFeed === 'for-you' && activeChannel && activeChannel.distributions) {
     postsToRender.sort((a, b) => {
       const coherenceA = checkPostCoherence(a, activeChannel.distributions!);
       const coherenceB = checkPostCoherence(b, activeChannel.distributions!);
       return coherenceB - coherenceA; // Descending
     });
   } else {
-    // If no active channel, just show newest first
+    // For "Following" feed or if no active channel, sort by newest first
     postsToRender.sort((a, b) => b.timestamp - a.timestamp);
   }
 
   container.innerHTML = '';
+
+  if (postsToRender.length === 0) {
+    if (appState.activeFeed === 'following') {
+      container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No posts from followed peers yet.</p>';
+    } else {
+      container.innerHTML = '<p style="padding: 1rem; color: var(--text-secondary);">No recent posts from peers yet.</p>';
+    }
+    return;
+  }
   for (const post of postsToRender) {
     const card = document.createElement('div');
     card.className = 'card match-card';
@@ -703,9 +748,32 @@ export function renderRecentPosts() {
       card.style.border = '1px dashed var(--border-subtle)';
     }
 
+    const followBtn = document.createElement('button');
+    followBtn.className = 'btn-icon';
+    followBtn.style.marginLeft = 'auto';
+    followBtn.style.fontSize = 'var(--font-size-xs)';
+    followBtn.textContent = appState.followedPeers.includes(post.author) ? 'Unfollow' : 'Follow';
+    followBtn.addEventListener('click', async () => {
+      const currentlyFollowing = appState.followedPeers.includes(post.author);
+      if (currentlyFollowing) {
+        appState.followedPeers = appState.followedPeers.filter(p => p !== post.author);
+        followBtn.textContent = 'Follow';
+      } else {
+        appState.followedPeers.push(post.author);
+        followBtn.textContent = 'Unfollow';
+      }
+      await saveFollowedPeers();
+      // Only re-render completely if we are actively in the following feed and just unfollowed someone
+      // otherwise just let the button update its state
+      if (appState.activeFeed === 'following' && currentlyFollowing) {
+         renderRecentPosts();
+      }
+    });
+    header.appendChild(followBtn);
+
     const flagBtn = document.createElement('button');
     flagBtn.className = 'btn-icon';
-    flagBtn.style.marginLeft = 'auto';
+    flagBtn.style.marginLeft = '0.5rem';
     flagBtn.style.fontSize = 'var(--font-size-xs)';
     flagBtn.textContent = '🚩 Flag';
     flagBtn.addEventListener('click', async () => {
@@ -732,8 +800,100 @@ export function renderRecentPosts() {
     content.className = 'match-desc';
     content.textContent = post.content;
 
+    // Add reaction bar
+    const reactionBar = document.createElement('div');
+    reactionBar.style.display = 'flex';
+    reactionBar.style.gap = '1rem';
+    reactionBar.style.marginTop = '0.5rem';
+
+    // Like button
+    const likeBtn = document.createElement('button');
+    likeBtn.className = 'btn-icon';
+    likeBtn.style.fontSize = 'var(--font-size-sm)';
+    const likeCount = (post.likes || []).length;
+    likeBtn.innerHTML = `❤️ <span class="like-count">${likeCount}</span>`;
+    likeBtn.addEventListener('click', async () => {
+      if (!appState.keypair || !appState.p2pNode) return;
+      const peerId = appState.p2pNode.peerId.toString();
+
+      // Update locally
+      post.likes = post.likes || [];
+      if (!post.likes.includes(peerId)) {
+        post.likes.push(peerId);
+        likeBtn.innerHTML = `❤️ <span class="like-count">${post.likes.length}</span>`;
+
+        // Broadcast
+        const reaction = await createSignedReaction(appState.keypair!, peerId, post.postID, 'like');
+        const connections = appState.p2pNode.getConnections();
+        for (const conn of connections) {
+          try {
+            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_REACTION);
+            await sendReactionMessage(stream, reaction);
+          } catch (e) {
+             console.warn(`Failed to send reaction to ${conn.remotePeer.toString()}`);
+          }
+        }
+      }
+    });
+
+    // Repost button
+    const repostBtn = document.createElement('button');
+    repostBtn.className = 'btn-icon';
+    repostBtn.style.fontSize = 'var(--font-size-sm)';
+    const repostCount = (post.reposts || []).length;
+    repostBtn.innerHTML = `🔁 <span class="repost-count">${repostCount}</span>`;
+    repostBtn.addEventListener('click', async () => {
+       if (!appState.keypair || !appState.p2pNode) return;
+      const peerId = appState.p2pNode.peerId.toString();
+
+      // Update locally
+      post.reposts = post.reposts || [];
+      if (!post.reposts.includes(peerId)) {
+        post.reposts.push(peerId);
+        repostBtn.innerHTML = `🔁 <span class="repost-count">${post.reposts.length}</span>`;
+
+        // Broadcast
+        const reaction = await createSignedReaction(appState.keypair!, peerId, post.postID, 'repost');
+        const connections = appState.p2pNode.getConnections();
+        for (const conn of connections) {
+          try {
+            const stream = await appState.p2pNode.dialProtocol(conn.remotePeer, PROTOCOL_REACTION);
+            await sendReactionMessage(stream, reaction);
+          } catch (e) {
+             console.warn(`Failed to send reaction to ${conn.remotePeer.toString()}`);
+          }
+        }
+      }
+    });
+
+    // Reply button (placeholder)
+    const replyBtn = document.createElement('button');
+    replyBtn.className = 'btn-icon';
+    replyBtn.style.fontSize = 'var(--font-size-sm)';
+    replyBtn.innerHTML = `💬`;
+    replyBtn.addEventListener('click', () => {
+       alert('Reply UI not yet implemented in Phase 1 shell. Check console for ID.');
+       console.log('Replying to post ID:', post.postID);
+    });
+
+    // Quote button (placeholder)
+    const quoteBtn = document.createElement('button');
+    quoteBtn.className = 'btn-icon';
+    quoteBtn.style.fontSize = 'var(--font-size-sm)';
+    quoteBtn.innerHTML = `❞`;
+    quoteBtn.addEventListener('click', () => {
+       alert('Quote UI not yet implemented in Phase 1 shell. Check console for ID.');
+       console.log('Quoting post ID:', post.postID);
+    });
+
+    reactionBar.appendChild(likeBtn);
+    reactionBar.appendChild(repostBtn);
+    reactionBar.appendChild(replyBtn);
+    reactionBar.appendChild(quoteBtn);
+
     card.appendChild(header);
     card.appendChild(content);
+    card.appendChild(reactionBar);
     container.appendChild(card);
   }
 }
@@ -1360,8 +1520,12 @@ function setupCompose() {
   const btnPostInline = document.getElementById('btn-publish-post-inline');
   const inputPostInline = document.getElementById('compose-post-input') as HTMLInputElement;
 
-  if (btnPostInline && inputPostInline && appState.keypair && appState.p2pNode) {
+  if (btnPostInline && inputPostInline) {
     btnPostInline.addEventListener('click', async () => {
+      if (!appState.keypair || !appState.p2pNode) {
+        alert("Initializing node, please wait...");
+        return;
+      }
       const desc = inputPostInline.value.trim();
 
       if (!desc) {
@@ -1491,6 +1655,38 @@ document.addEventListener('DOMContentLoaded', () => {
   const testBtn = document.getElementById('btn-test-match');
   if (testBtn) {
     testBtn.addEventListener('click', computeTestMatch);
+  }
+
+  // Feed tabs logic
+  const tabForYou = document.getElementById('tab-for-you');
+  const tabFollowing = document.getElementById('tab-following');
+
+  if (tabForYou && tabFollowing) {
+    tabForYou.addEventListener('click', () => {
+      appState.activeFeed = 'for-you';
+      tabForYou.classList.add('active');
+      tabForYou.style.color = 'var(--text-primary)';
+      tabForYou.style.fontWeight = 'bold';
+
+      tabFollowing.classList.remove('active');
+      tabFollowing.style.color = 'var(--text-secondary)';
+      tabFollowing.style.fontWeight = 'normal';
+
+      renderRecentPosts();
+    });
+
+    tabFollowing.addEventListener('click', () => {
+      appState.activeFeed = 'following';
+      tabFollowing.classList.add('active');
+      tabFollowing.style.color = 'var(--text-primary)';
+      tabFollowing.style.fontWeight = 'bold';
+
+      tabForYou.classList.remove('active');
+      tabForYou.style.color = 'var(--text-secondary)';
+      tabForYou.style.fontWeight = 'normal';
+
+      renderRecentPosts();
+    });
   }
 
   // IRC-style view switching

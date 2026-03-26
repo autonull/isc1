@@ -68,7 +68,7 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 | Reputation system + signed moderation events | ✅ | P0 |
 | Offline-first: queue + background sync | ✅ | P1 |
 | Delegation health metrics + supernode ranking | ✅ | P1 |
-| PWA — installable on mobile, offline-capable shell | 🔲 | P1 |
+| PWA — installable on mobile, offline-capable shell | ✅ | P1 |
 | IPFS deployment — zero-infra hosting | 🔲 | P2 |
 | Community model registry + migration tooling | 🔲 | P2 |
 
@@ -102,8 +102,8 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 
 | Feature | Status | Priority |
 |---|---|---|
-| Posts & semantic feeds ("For You" + "Following") | 🔲 | P0 |
-| Reactions (likes, reposts, replies, quotes) | 🔲 | P0 |
+| Posts & semantic feeds ("For You" + "Following") | ✅ | P0 |
+| Reactions (likes, reposts, replies, quotes) | ✅ | P0 |
 | Profiles & follow / Web of Trust | 🔲 | P0 |
 | Communities — shared channel distributions | 🔲 | P1 |
 | Audio Spaces (WebRTC mesh audio) | 🔲 | P1 |
