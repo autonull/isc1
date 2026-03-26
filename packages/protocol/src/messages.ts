@@ -1,6 +1,7 @@
 export const PROTOCOL_CHAT = '/isc/chat/1.0';
 export const PROTOCOL_DELEGATE = '/isc/delegate/1.0';
 export const PROTOCOL_ANNOUNCE = '/isc/announce/1.0';
+export const PROTOCOL_MODERATION = '/isc/moderation/1.0';
 
 export interface ChatMessage {
   channelID: string;
