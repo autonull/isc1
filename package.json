@@ -12,6 +12,7 @@
     "lint": "turbo run lint"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "turbo": "^1.10.12",
     "typescript": "^5.0.0",
     "vitest": "^0.34.0"
