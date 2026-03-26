@@ -17,11 +17,11 @@ ISC is being developed in phases, starting with core reliability in trusted netw
 **Goal:** Deliver a fully functional, interoperable prototype as fast as physically possible.
 
 ### 1. Implement & Stabilize CLI / Server Mode
-- [ ] CLI: Implement `announce` command with rate limit enforcement
-- [ ] CLI: Implement `chat` command with rate limit enforcement
-- [ ] Server/Supernode: Enforce delegation request limits (`PROTOCOL_DELEGATE`)
-- [ ] Server/Supernode: Enforce announce limits (`PROTOCOL_ANNOUNCE`)
-- [ ] Write integration test (`apps/cli/test_integration.sh` or node script) spawning 3+ nodes, announcing, querying, and verifying matches.
+- [x] CLI: Implement `announce` command with rate limit enforcement
+- [x] CLI: Implement `chat` command with rate limit enforcement
+- [x] Server/Supernode: Enforce delegation request limits (`PROTOCOL_DELEGATE`)
+- [x] Server/Supernode: Enforce announce limits (`PROTOCOL_ANNOUNCE`)
+- [x] Write integration test (`apps/cli/test_integration.sh` or node script) spawning 3+ nodes, announcing, querying, and verifying matches.
 
 ### 2. Complete Core Browser MVP
 - [ ] Single/multi-channel semantic matching + WebRTC 1:1 chat (verify/fix rate limits client-side)
