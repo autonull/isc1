@@ -2,3 +2,7 @@ node_modules
 dist
 .turbo
 *.tsbuildinfo
+verify*.png
+verify.py
+*_output.log
+supernode.log

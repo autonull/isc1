@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { handleIncomingChat, sendChatMessage, ChatMessage } from '../src/chat';
+import { handleIncomingChat, sendChatMessage } from '../src/chat';
+import { ChatMessage } from '../src/messages';
 import { fromString } from 'uint8arrays';
 
 describe('Chat Protocol', () => {
