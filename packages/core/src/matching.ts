@@ -1,5 +1,5 @@
 import { Distribution } from './semantic.js';
-import { sampleFromDistribution } from './sampling.js';
+import { sampleFromDistribution, analyticDistributionMatch } from './sampling.js';
 import { cosineSimilarity } from './math.js';
 
 // Tier-specific sample counts
@@ -121,46 +121,67 @@ export function spatiotemporalSimilarity(
  * @param myDists User's channel distributions (index 0 is root)
  * @param peerDists Peer's channel distributions (index 0 is root)
  * @param tier Device tier (defaults to 'high')
+ * @param mode Evaluation mode (defaults to 'monte_carlo')
  * @returns Score between 0.0 and 1.0
  */
 export function relationalMatch(
   myDists: Distribution[],
   peerDists: Distribution[],
-  tier: 'minimal' | 'low' | 'mid' | 'high' = 'high'
+  tier: 'minimal' | 'low' | 'mid' | 'high' = 'high',
+  mode: 'monte_carlo' | 'analytic' = 'monte_carlo'
 ): number {
   if (!myDists.length || !peerDists.length) return 0;
 
   let score = 0;
   let totalWeight = 0;
 
-  // Draw samples for distribution comparison
-  const nSamples = TIER_SAMPLES[tier];
-
   // 1. Root alignment (Required)
-  const myRootSamples = sampleFromDistribution(myDists[0].mu, myDists[0].sigma, nSamples);
-  const peerRootSamples = sampleFromDistribution(peerDists[0].mu, peerDists[0].sigma, nSamples);
-
   let rootScore = 0;
-  for (let s = 0; s < nSamples; s++) {
-    rootScore += cosineSimilarity(myRootSamples[s], peerRootSamples[s]);
+  if (mode === 'analytic') {
+    rootScore = analyticDistributionMatch(
+      myDists[0].mu, myDists[0].sigma,
+      peerDists[0].mu, peerDists[0].sigma
+    );
+  } else {
+    const nSamples = TIER_SAMPLES[tier];
+    const myRootSamples = sampleFromDistribution(myDists[0].mu, myDists[0].sigma, nSamples);
+    const peerRootSamples = sampleFromDistribution(peerDists[0].mu, peerDists[0].sigma, nSamples);
+
+    for (let s = 0; s < nSamples; s++) {
+      rootScore += cosineSimilarity(myRootSamples[s], peerRootSamples[s]);
+    }
+    rootScore /= nSamples;
   }
-  score += (rootScore / nSamples);
+
+  score += rootScore;
   totalWeight += 1;
 
   // 2. Fused alignments — best-match bipartite pairing
   // Compare each of our relations against all of their relations
+  const nSamples = TIER_SAMPLES[tier];
   for (let i = 1; i < myDists.length; i++) {
     let best = 0;
-    const myFusedSamples = sampleFromDistribution(myDists[i].mu, myDists[i].sigma, nSamples);
+
+    let myFusedSamples: number[][] = [];
+    if (mode === 'monte_carlo') {
+      myFusedSamples = sampleFromDistribution(myDists[i].mu, myDists[i].sigma, nSamples);
+    }
 
     for (let j = 1; j < peerDists.length; j++) {
-      const peerFusedSamples = sampleFromDistribution(peerDists[j].mu, peerDists[j].sigma, nSamples);
-
       let sampleSim = 0;
-      for (let s = 0; s < nSamples; s++) {
-         sampleSim += cosineSimilarity(myFusedSamples[s], peerFusedSamples[s]);
+
+      if (mode === 'analytic') {
+        sampleSim = analyticDistributionMatch(
+          myDists[i].mu, myDists[i].sigma,
+          peerDists[j].mu, peerDists[j].sigma
+        );
+      } else {
+        const peerFusedSamples = sampleFromDistribution(peerDists[j].mu, peerDists[j].sigma, nSamples);
+        for (let s = 0; s < nSamples; s++) {
+           sampleSim += cosineSimilarity(myFusedSamples[s], peerFusedSamples[s]);
+        }
+        sampleSim /= nSamples;
       }
-      sampleSim /= nSamples;
 
       // Apply tag-match bonus if tags align
       const adjustedSim = sampleSim * (myDists[i].tag === peerDists[j].tag ? 1.2 : 1.0);

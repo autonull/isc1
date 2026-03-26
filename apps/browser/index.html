@@ -15,6 +15,7 @@
         <button class="nav-btn" data-tab="compose">➕ Compose</button>
         <button class="nav-btn" data-tab="chats">💬 Chats</button>
         <button class="nav-btn" data-tab="settings">⚙️ Settings</button>
+        <button class="nav-btn" data-tab="test">🧪 Test Match</button>
       </nav>
 
       <!-- Main Content Area -->
@@ -147,6 +148,26 @@
               <strong>● AI Ethics</strong>
               <span>14 nearby</span>
               <button>Active</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 6: Test Match -->
+        <section id="tab-test" class="tab-content">
+          <header class="chats-header">
+            <h2>Semantic Matcher Test</h2>
+          </header>
+          <div class="compose-body">
+            <label>Channel A Description</label>
+            <textarea id="test-input-a" rows="3">Ethical implications of machine learning and autonomy</textarea>
+
+            <label>Channel B Description</label>
+            <textarea id="test-input-b" rows="3">The philosophy of AI art and copyright</textarea>
+
+            <button id="btn-test-match" class="btn-primary" disabled>Compute Match (Wait for model)</button>
+
+            <div style="margin-top: 1rem;">
+              <strong>Similarity Score:</strong> <span id="test-match-result">N/A</span>
             </div>
           </div>
         </section>
