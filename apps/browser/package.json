@@ -12,11 +12,16 @@
     "@isc/adapters": "^0.1.0",
     "@isc/core": "^0.1.0",
     "@isc/protocol": "^0.1.0",
+    "@libp2p/bootstrap": "^12.0.13",
+    "@libp2p/identify": "^4.0.12",
+    "@libp2p/kad-dht": "^16.1.5",
     "@libp2p/mplex": "^12.0.13",
     "@libp2p/noise": "^1.0.1",
+    "@libp2p/ping": "^3.0.12",
     "@libp2p/webrtc": "^6.0.13",
     "@libp2p/websockets": "^10.1.5",
-    "libp2p": "^3.1.5"
+    "libp2p": "^3.1.5",
+    "multiformats": "^13.4.2"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

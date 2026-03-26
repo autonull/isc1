@@ -23,41 +23,10 @@
 
         <!-- Tab 1: Now -->
         <section id="tab-now" class="tab-content active">
-          <header class="channel-header">
-            <div class="channel-title">
-              <h1><span class="status-dot active">●</span> AI Ethics</h1>
-              <div class="actions">
-                <button>▼</button>
-                <button>✏️</button>
-              </div>
-            </div>
-            <p class="description">"Ethical implications of machine learning..."</p>
-            <div class="context-chips">
-              <span class="chip">📍 Tokyo</span>
-              <span class="chip">🕐 2026</span>
-              <span class="chip">💭 Reflective</span>
-            </div>
-            <div class="meta">
-              <span>◉ 14 nearby</span>
-              <span>Updated 3 min ago</span>
-              <span>🔒 E2E</span>
-            </div>
+          <header class="channel-header" id="now-channel-header">
+            <p>Select or create a channel to start matching.</p>
           </header>
-
-          <div class="match-list">
-            <h3>Very Close (0.85+)</h3>
-            <div class="match-card">
-              <div class="match-header">
-                <span class="signal-bars">▐▌▐▌▐</span>
-                <strong>Alex Chen</strong>
-              </div>
-              <p>"Also thinking about AI copyright"</p>
-              <div class="match-meta">
-                <span>📍 Neo-Tokyo</span>
-                <span>🕐 2026</span>
-              </div>
-              <button class="btn-chat">Tap to chat</button>
-            </div>
+          <div class="match-list" id="now-match-list">
           </div>
         </section>
 
@@ -67,49 +36,39 @@
             <input type="text" placeholder="🔍 Search thoughts..." />
           </div>
           <h3>Trending Now</h3>
-          <div class="trending-cards">
-            <div class="trend-card">
-              <strong>AI Safety</strong>
-              <p>2.3k thinking</p>
-            </div>
+          <div class="trending-cards" id="discover-trending-cards">
+            <p>Trending not available yet.</p>
           </div>
         </section>
 
         <!-- Tab 3: Compose -->
         <section id="tab-compose" class="tab-content">
           <header class="compose-header">
-            <button class="btn-cancel">← Cancel</button>
+            <button class="btn-cancel" id="btn-compose-cancel">← Cancel</button>
             <h2>New Channel</h2>
-            <button class="btn-save">Save →</button>
           </header>
           <div class="compose-body">
             <label>Channel Name</label>
-            <input type="text" value="AI Ethics" />
+            <input type="text" id="compose-name" placeholder="E.g., AI Ethics" />
 
             <label>What are you thinking about?</label>
-            <textarea rows="4">Ethical implications of machine learning, autonomy, and the philosophy of AI art.</textarea>
+            <textarea id="compose-description" rows="4" placeholder="Describe your thought..."></textarea>
 
-            <button class="btn-add-context">+ Add context (optional)</button>
-            <div class="context-list">
-              <span class="chip removable">📍 Tokyo ✕</span>
-              <span class="chip removable">🕐 2026 ✕</span>
-              <span class="chip removable">💭 Reflective ✕</span>
+            <button class="btn-add-context" id="btn-add-context">+ Add context (optional)</button>
+            <div class="context-list" id="compose-context-list">
             </div>
 
             <div class="spread-control">
               <label>How specific are you being?</label>
               <div class="slider-wrapper">
                 <span>Precise</span>
-                <input type="range" min="0" max="100" value="30" />
+                <input type="range" id="compose-spread" min="1" max="100" value="30" />
                 <span>Exploratory</span>
               </div>
             </div>
 
-            <div class="reach-estimate">
-              ◉ Estimated reach: 14–50 nearby minds
-            </div>
-
-            <button class="btn-primary">Publish Channel</button>
+            <button class="btn-primary" id="btn-publish-channel">Publish Channel</button>
+            <div id="compose-status" style="margin-top: 1rem; color: var(--text-secondary);"></div>
           </div>
         </section>
 
@@ -117,19 +76,9 @@
         <section id="tab-chats" class="tab-content">
           <header class="chats-header">
             <h2>Chats</h2>
-            <button>Filter</button>
           </header>
-          <div class="chat-list">
-            <div class="chat-item">
-              <div class="chat-item-header">
-                <strong>Alex Chen</strong>
-                <span class="time">2 min ago</span>
-              </div>
-              <p>"the copyright angle is so..."</p>
-              <div class="chat-item-meta">
-                via AI Ethics · ▐▌▐▌▐ 0.91
-              </div>
-            </div>
+          <div class="chat-list" id="chat-list">
+            <p>No active chats.</p>
           </div>
         </section>
 
@@ -137,18 +86,13 @@
         <section id="tab-settings" class="tab-content">
           <h2>Profile</h2>
           <div class="profile-card">
-            <h3>Your Display Name</h3>
-            <p>@optional-handle</p>
-            <p class="bio">"What are you thinking about..."</p>
+            <h3>Your Peer ID</h3>
+            <p id="profile-peer-id">Loading...</p>
+            <p class="bio" id="profile-bio">"No active channels"</p>
           </div>
 
-          <h3>Your Channels (4)</h3>
-          <div class="channel-list">
-            <div class="channel-item">
-              <strong>● AI Ethics</strong>
-              <span>14 nearby</span>
-              <button>Active</button>
-            </div>
+          <h3>Your Channels (<span id="settings-channel-count">0</span>)</h3>
+          <div class="channel-list" id="settings-channel-list">
           </div>
         </section>
 
