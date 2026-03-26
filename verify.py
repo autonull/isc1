@@ -26,18 +26,21 @@ def run():
             page.fill("#compose-name", "Test Channel")
             page.fill("#compose-description", "Test Description")
 
+            print("Waiting 15s for model load")
+            time.sleep(15)
+
             print("Clicking publish")
             page.click("#btn-publish-channel")
 
-            print("Waiting 5s for model load and embedding")
-            time.sleep(5)
+            print("Waiting 15s for embedding")
+            time.sleep(15)
 
             page.screenshot(path="verify_output.png")
             print("Screenshot saved to verify_output.png")
 
             print("Clicking Now tab to see if it appeared")
             page.click(".nav-btn[data-tab='now']")
-            time.sleep(1)
+            time.sleep(5)
             page.screenshot(path="verify_now.png")
 
         except Exception as e:
